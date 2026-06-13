@@ -297,11 +297,17 @@ function cloneJson(value) {
 }
 
 function normalizeProgress(progress) {
-  return {
+  const normalized = {
     schemaVersion: 1,
     updatedAt: progress?.updatedAt || null,
     items: progress?.items && typeof progress.items === "object" ? progress.items : {}
   };
+
+  if (progress?.lodestone && typeof progress.lodestone === "object") {
+    normalized.lodestone = progress.lodestone;
+  }
+
+  return normalized;
 }
 
 function populateSourceFilter() {
@@ -371,14 +377,12 @@ function syncCategoryButtons() {
 }
 
 function syncLodestoneAvailability() {
-  const supportsLodestone = state.storageMode === "server" && Boolean(lodestoneCategories[state.category]);
+  const supportsLodestone = Boolean(lodestoneCategories[state.category]);
   elements.lodestoneInput.disabled = !supportsLodestone;
   elements.importLodestone.disabled = !supportsLodestone;
   elements.lodestoneInput.placeholder = supportsLodestone
     ? "Lodestone キャラクターURL / ID"
-    : state.storageMode === "browser"
-      ? "Web版ではLodestone読込はローカル版のみ対応"
-      : "Lodestone読込はミニオン/マウントのみ対応";
+    : "Lodestone読込はミニオン/マウントのみ対応";
 }
 
 function syncViewButtons() {
@@ -785,11 +789,6 @@ async function refreshCatalog() {
 }
 
 async function importLodestone() {
-  if (state.storageMode === "browser") {
-    showToast("Web版ではLodestone読込は使えません。ローカル版で読み込み、進捗JSONを書き出して取り込んでください。", "error");
-    return;
-  }
-
   const endpointCategory = lodestoneCategories[state.category];
   if (!endpointCategory) {
     showToast(`${categoryLabel(state.category)}はLodestone読込に対応していません`, "error");
@@ -806,6 +805,14 @@ async function importLodestone() {
   elements.importLodestone.textContent = "読込中";
 
   try {
+    if (state.storageMode === "browser") {
+      const result = await importLodestoneViaFfxivCollect(character, endpointCategory, state.category);
+      state.progress = normalizeProgress(result.progress);
+      render();
+      showToast(`Lodestone: ${categoryLabel(state.category)} ${result.read}件中 ${result.matched}件を取得済みにしました`);
+      return;
+    }
+
     const result = await fetchJson(`/api/lodestone/${endpointCategory}/import`, {
       method: "POST",
       body: JSON.stringify({ character })
@@ -823,6 +830,139 @@ async function importLodestone() {
     elements.importLodestone.textContent = "Lodestone読込";
     syncLodestoneAvailability();
   }
+}
+
+async function importLodestoneViaFfxivCollect(characterInput, endpointCategory, categoryKey) {
+  const characterId = parseCharacterId(characterInput);
+  if (!characterId) {
+    throw new Error("LodestoneのキャラクターURL、またはIDを入力してください");
+  }
+
+  const characterUrl = `https://ffxivcollect.com/api/characters/${encodeURIComponent(characterId)}`;
+  const character = await fetchExternalJson(characterUrl);
+  const categoryStatus = character?.[endpointCategory];
+  if (categoryStatus?.public === false) {
+    throw new Error(`${categoryLabel(categoryKey)}の公開設定がオフになっているようです。Lodestone側の公開設定を確認してください。`);
+  }
+
+  const ownedUrl = `${characterUrl}/${endpointCategory}/owned`;
+  const ownedItems = await fetchExternalJson(ownedUrl);
+  if (!Array.isArray(ownedItems)) {
+    throw new Error("FFXIV Collectから所持情報を読み取れませんでした");
+  }
+
+  const catalogItems = categoryItems();
+  const byExternalId = new Map();
+  const byName = new Map();
+
+  for (const item of catalogItems) {
+    const externalId = ffxivCollectIdForItem(item, categoryKey);
+    if (externalId) {
+      byExternalId.set(externalId, item);
+    }
+
+    [item.nameJa, item.nameEn, displayName(item)].forEach((name) => {
+      const normalized = normalizeCollectionName(name);
+      if (normalized) byName.set(normalized, item);
+    });
+  }
+
+  const matched = [];
+  const unmatched = [];
+  const importedAt = new Date().toISOString();
+
+  for (const ownedItem of ownedItems) {
+    const externalId = Number(ownedItem?.id);
+    const item =
+      byExternalId.get(externalId) ||
+      byName.get(normalizeCollectionName(ownedItem?.name));
+
+    if (!item) {
+      unmatched.push(ownedItem?.name || String(ownedItem?.id || ""));
+      continue;
+    }
+
+    const progress = getProgress(item.id);
+    progress.owned = true;
+    progress.wanted = false;
+    progress.priority = progress.priority || "none";
+    progress.notes = progress.notes || "";
+    progress.updatedAt = importedAt;
+    matched.push(item.id);
+  }
+
+  state.progress.schemaVersion = 1;
+  state.progress.updatedAt = importedAt;
+  state.progress.lodestone = {
+    ...(state.progress.lodestone && typeof state.progress.lodestone === "object" ? state.progress.lodestone : {}),
+    [categoryKey]: {
+      characterId,
+      characterName: character?.name || "",
+      server: character?.server || "",
+      importedAt,
+      total: categoryStatus?.count ?? ownedItems.length,
+      read: ownedItems.length,
+      matched: matched.length,
+      unmatched: unmatched.slice(0, 50),
+      source: "FFXIV Collect API"
+    },
+    lastCategory: categoryKey,
+    lastImportedAt: importedAt
+  };
+
+  saveStoredJson(storageKeys.progress, state.progress);
+
+  return {
+    characterId,
+    read: ownedItems.length,
+    matched: matched.length,
+    unmatched: unmatched.length,
+    progress: state.progress
+  };
+}
+
+async function fetchExternalJson(url) {
+  const response = await fetch(url, {
+    headers: { Accept: "application/json" },
+    cache: "no-store"
+  });
+
+  if (!response.ok) {
+    throw new Error(`外部APIの読み込みに失敗しました: ${response.status}`);
+  }
+
+  return response.json();
+}
+
+function parseCharacterId(value) {
+  const text = String(value || "").trim();
+  const urlMatch = text.match(/\/lodestone\/character\/(\d+)/);
+  if (urlMatch) return urlMatch[1];
+
+  const pathMatch = text.match(/(?:character\/)?(\d+)(?:\/|$)/);
+  return pathMatch ? pathMatch[1] : null;
+}
+
+function ffxivCollectIdForItem(item, categoryKey) {
+  const externalId = Number(item?.externalIds?.ffxivCollect);
+  if (Number.isFinite(externalId) && externalId > 0) {
+    return externalId;
+  }
+
+  const prefix = `${categoryKey}-`;
+  if (String(item?.id || "").startsWith(prefix)) {
+    const id = Number(String(item.id).slice(prefix.length));
+    return Number.isFinite(id) && id > 0 ? id : null;
+  }
+
+  return null;
+}
+
+function normalizeCollectionName(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[\s\-‐‑‒–—―'’"“”.,:;!?()[\]{}（）【】「」『』・]/g, "")
+    .trim();
 }
 
 function exportProgress() {
