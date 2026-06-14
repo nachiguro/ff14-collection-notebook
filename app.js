@@ -10,6 +10,7 @@ const state = {
   sort: "patch-desc",
   layout: "grid",
   storageMode: "server",
+  config: null,
   selectedId: null,
   detailVisible: true,
   saveTimer: null
@@ -59,6 +60,8 @@ const lodestoneCategories = {
   minion: "minions"
 };
 
+const lodestoneProxyTooltipBatchSize = 20;
+
 const storageKeys = {
   progress: "ff14CollectionNotebook.progress.v1",
   settings: "ff14CollectionNotebook.settings.v1"
@@ -75,6 +78,10 @@ const defaultSettings = {
   theme: "nocturne",
   density: "comfortable",
   defaultSort: "patch-desc"
+};
+
+const defaultAppConfig = {
+  lodestoneProxyUrl: ""
 };
 
 const numberedSortCategories = new Set(["orchestrion", "card"]);
@@ -212,12 +219,13 @@ function bindEvents() {
 
 async function loadData() {
   try {
-    const { catalog, progress, settings, storageMode } = await loadAppData();
+    const { catalog, progress, settings, storageMode, config } = await loadAppData();
 
     state.catalog = catalog;
     state.progress = normalizeProgress(progress);
     state.settings = settings;
     state.storageMode = storageMode;
+    state.config = { ...defaultAppConfig, ...(config || {}) };
     state.sort = settings.defaultSort || "patch-desc";
     syncCategoryButtons();
     populateSourceFilter();
@@ -232,6 +240,8 @@ async function loadData() {
 }
 
 async function loadAppData() {
+  const config = await loadAppConfig();
+
   if (shouldTryServerApi()) {
     try {
       const [catalog, progress, settings] = await Promise.all([
@@ -239,7 +249,7 @@ async function loadAppData() {
         fetchJson("/api/progress"),
         fetchJson("/api/settings")
       ]);
-      return { catalog, progress, settings, storageMode: "server" };
+      return { catalog, progress, settings, storageMode: "server", config };
     } catch (error) {
       console.warn(`Server API unavailable, using browser storage: ${error.message}`);
     }
@@ -250,8 +260,36 @@ async function loadAppData() {
     catalog,
     progress: loadStoredJson(storageKeys.progress, defaultProgress),
     settings: loadStoredJson(storageKeys.settings, defaultSettings),
-    storageMode: "browser"
+    storageMode: "browser",
+    config
   };
+}
+
+async function loadAppConfig() {
+  const config = { ...defaultAppConfig };
+
+  try {
+    const response = await fetch("data/app-config.json", { cache: "no-store" });
+    if (response.ok) {
+      const loaded = await response.json();
+      Object.assign(config, loaded || {});
+    } else if (response.status !== 404) {
+      console.warn(`App config unavailable: ${response.status}`);
+    }
+  } catch (error) {
+    console.warn(`App config unavailable: ${error.message}`);
+  }
+
+  const urlParams = new URLSearchParams(location.search);
+  const overrideUrl =
+    urlParams.get("lodestoneProxyUrl") ||
+    localStorage.getItem("ff14CollectionNotebook.lodestoneProxyUrl");
+  if (overrideUrl) {
+    config.lodestoneProxyUrl = overrideUrl;
+  }
+
+  config.lodestoneProxyUrl = String(config.lodestoneProxyUrl || "").trim().replace(/\/+$/, "");
+  return config;
 }
 
 function shouldTryServerApi() {
@@ -838,24 +876,94 @@ async function importLodestoneViaFfxivCollect(characterInput, endpointCategory, 
     throw new Error("LodestoneのキャラクターURL、またはIDを入力してください");
   }
 
-  const characterUrl = `https://ffxivcollect.com/api/characters/${encodeURIComponent(characterId)}`;
-  const character = await fetchExternalJson(characterUrl);
-  const categoryStatus = character?.[endpointCategory];
-  if (categoryStatus?.public === false) {
-    throw new Error(`${categoryLabel(categoryKey)}の公開設定がオフになっているようです。Lodestone側の公開設定を確認してください。`);
+  try {
+    const characterUrl = `https://ffxivcollect.com/api/characters/${encodeURIComponent(characterId)}`;
+    const character = await fetchExternalJson(characterUrl);
+    const categoryStatus = character?.[endpointCategory];
+    if (categoryStatus?.public === false) {
+      throw new Error(`${categoryLabel(categoryKey)}の公開設定がオフになっているようです。Lodestone側の公開設定を確認してください。`);
+    }
+
+    const ownedUrl = `${characterUrl}/${endpointCategory}/owned`;
+    const ownedItems = await fetchExternalJson(ownedUrl);
+    if (!Array.isArray(ownedItems)) {
+      throw new Error("FFXIV Collectから所持情報を読み取れませんでした");
+    }
+
+    return applyOwnedCollectionImport({
+      characterId,
+      categoryKey,
+      ownedItems,
+      total: categoryStatus?.count ?? ownedItems.length,
+      source: "FFXIV Collect API",
+      characterName: character?.name || "",
+      server: character?.server || ""
+    });
+  } catch (error) {
+    return importLodestoneViaProxy(characterId, endpointCategory, categoryKey, error);
+  }
+}
+
+async function importLodestoneViaProxy(characterId, endpointCategory, categoryKey, originalError) {
+  const proxyBaseUrl = String(state.config?.lodestoneProxyUrl || "").trim().replace(/\/+$/, "");
+  if (!proxyBaseUrl) {
+    throw new Error(`ブラウザ版のLodestone読込にはCloudflare Workerの設定が必要です。FFXIV Collect API: ${originalError.message}`);
   }
 
-  const ownedUrl = `${characterUrl}/${endpointCategory}/owned`;
-  const ownedItems = await fetchExternalJson(ownedUrl);
-  if (!Array.isArray(ownedItems)) {
-    throw new Error("FFXIV Collectから所持情報を読み取れませんでした");
+  const collectionUrl = new URL(`${proxyBaseUrl}/collection`);
+  collectionUrl.searchParams.set("characterId", characterId);
+  collectionUrl.searchParams.set("category", categoryKey);
+
+  const collection = await fetchExternalJson(collectionUrl.toString());
+  const tooltipUrls = Array.isArray(collection.tooltipUrls) ? collection.tooltipUrls : [];
+
+  if (tooltipUrls.length === 0) {
+    throw new Error(`${categoryLabel(categoryKey)}のLodestone一覧を読み取れませんでした。公開設定を確認してください。`);
   }
 
+  const ownedItems = [];
+
+  for (let index = 0; index < tooltipUrls.length; index += lodestoneProxyTooltipBatchSize) {
+    const batch = tooltipUrls.slice(index, index + lodestoneProxyTooltipBatchSize);
+    elements.importLodestone.textContent = `読込中 ${Math.min(index + batch.length, tooltipUrls.length)}/${tooltipUrls.length}`;
+
+    const tooltipResult = await fetchExternalJson(`${proxyBaseUrl}/tooltips`, {
+      method: "POST",
+      body: JSON.stringify({
+        category: categoryKey,
+        urls: batch
+      })
+    });
+
+    if (Array.isArray(tooltipResult.items)) {
+      ownedItems.push(...tooltipResult.items);
+    }
+  }
+
+  if (ownedItems.length === 0) {
+    throw new Error("Lodestoneから取得済みアイテムを読み取れませんでした。");
+  }
+
+  return applyOwnedCollectionImport({
+    characterId: collection.characterId || characterId,
+    categoryKey,
+    ownedItems,
+    total: collection.total ?? ownedItems.length,
+    source: "Lodestone via Cloudflare Workers",
+    characterName: collection.characterName || "",
+    server: collection.server || ""
+  });
+}
+
+function applyOwnedCollectionImport({ characterId, categoryKey, ownedItems, total, source, characterName, server }) {
   const catalogItems = categoryItems();
+  const byItemId = new Map();
   const byExternalId = new Map();
   const byName = new Map();
 
   for (const item of catalogItems) {
+    byItemId.set(item.id, item);
+
     const externalId = ffxivCollectIdForItem(item, categoryKey);
     if (externalId) {
       byExternalId.set(externalId, item);
@@ -874,11 +982,12 @@ async function importLodestoneViaFfxivCollect(characterInput, endpointCategory, 
   for (const ownedItem of ownedItems) {
     const externalId = Number(ownedItem?.id);
     const item =
+      byItemId.get(ownedItem?.itemId) ||
       byExternalId.get(externalId) ||
-      byName.get(normalizeCollectionName(ownedItem?.name));
+      byName.get(normalizeCollectionName(ownedItem?.name || ownedItem?.nameJa || ownedItem?.nameEn));
 
     if (!item) {
-      unmatched.push(ownedItem?.name || String(ownedItem?.id || ""));
+      unmatched.push(ownedItem?.name || ownedItem?.nameJa || ownedItem?.itemId || String(ownedItem?.id || ""));
       continue;
     }
 
@@ -897,14 +1006,14 @@ async function importLodestoneViaFfxivCollect(characterInput, endpointCategory, 
     ...(state.progress.lodestone && typeof state.progress.lodestone === "object" ? state.progress.lodestone : {}),
     [categoryKey]: {
       characterId,
-      characterName: character?.name || "",
-      server: character?.server || "",
+      characterName,
+      server,
       importedAt,
-      total: categoryStatus?.count ?? ownedItems.length,
+      total: total ?? ownedItems.length,
       read: ownedItems.length,
       matched: matched.length,
       unmatched: unmatched.slice(0, 50),
-      source: "FFXIV Collect API"
+      source
     },
     lastCategory: categoryKey,
     lastImportedAt: importedAt
@@ -921,14 +1030,33 @@ async function importLodestoneViaFfxivCollect(characterInput, endpointCategory, 
   };
 }
 
-async function fetchExternalJson(url) {
+async function fetchExternalJson(url, options = {}) {
+  const headers = {
+    Accept: "application/json",
+    ...(options.headers || {})
+  };
+
+  if (options.body && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
+
   const response = await fetch(url, {
-    headers: { Accept: "application/json" },
+    ...options,
+    headers,
     cache: "no-store"
   });
 
   if (!response.ok) {
-    throw new Error(`外部APIの読み込みに失敗しました: ${response.status}`);
+    let message = `外部APIの読み込みに失敗しました: ${response.status}`;
+    try {
+      const payload = await response.json();
+      message = payload.error || payload.message || message;
+    } catch {
+      // Keep the status message when the external API did not return JSON.
+    }
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
   }
 
   return response.json();
