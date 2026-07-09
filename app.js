@@ -338,14 +338,54 @@ function normalizeProgress(progress) {
   const normalized = {
     schemaVersion: 1,
     updatedAt: progress?.updatedAt || null,
-    items: progress?.items && typeof progress.items === "object" ? progress.items : {}
+    items: {}
   };
+
+  if (progress?.items && typeof progress.items === "object") {
+    Object.entries(progress.items).forEach(([itemId, itemProgress]) => {
+      const normalizedItem = normalizeProgressItem(itemProgress);
+      if (!isDefaultProgressItem(normalizedItem)) {
+        normalized.items[itemId] = normalizedItem;
+      }
+    });
+  }
 
   if (progress?.lodestone && typeof progress.lodestone === "object") {
     normalized.lodestone = progress.lodestone;
   }
 
   return normalized;
+}
+
+function createDefaultProgressItem() {
+  return {
+    owned: false,
+    wanted: false,
+    priority: "none",
+    notes: "",
+    updatedAt: null
+  };
+}
+
+function normalizeProgressItem(progress) {
+  const normalized = createDefaultProgressItem();
+  if (!progress || typeof progress !== "object") {
+    return normalized;
+  }
+
+  normalized.owned = progress.owned === true;
+  normalized.wanted = progress.wanted === true;
+  normalized.priority = priorityLabels[progress.priority] ? progress.priority : "none";
+  normalized.notes = typeof progress.notes === "string" ? progress.notes : "";
+  normalized.updatedAt = progress.updatedAt || null;
+  return normalized;
+}
+
+function isDefaultProgressItem(progress) {
+  return !progress.owned &&
+    !progress.wanted &&
+    (!progress.priority || progress.priority === "none") &&
+    !progress.notes;
 }
 
 function populateSourceFilter() {
@@ -440,16 +480,18 @@ function selectFirstItem() {
 }
 
 function getProgress(itemId) {
-  if (!state.progress.items[itemId]) {
-    state.progress.items[itemId] = {
-      owned: false,
-      wanted: false,
-      priority: "none",
-      notes: "",
-      updatedAt: null
-    };
-  }
-  return state.progress.items[itemId];
+  return state.progress.items[itemId] || createDefaultProgressItem();
+}
+
+function getWritableProgress(itemId) {
+  const current = state.progress.items[itemId];
+  const progress = current ? normalizeProgressItem(current) : createDefaultProgressItem();
+  state.progress.items[itemId] = progress;
+  return progress;
+}
+
+function pruneProgress(progress) {
+  return normalizeProgress(progress);
 }
 
 function itemsWithProgress() {
@@ -740,7 +782,7 @@ function renderDetail() {
   });
 
   elements.detailContent.querySelector("#prioritySelect").addEventListener("change", (event) => {
-    const progress = getProgress(item.id);
+    const progress = getWritableProgress(item.id);
     progress.priority = event.target.value;
     progress.updatedAt = new Date().toISOString();
     scheduleSave();
@@ -748,7 +790,7 @@ function renderDetail() {
   });
 
   elements.detailContent.querySelector("#notesInput").addEventListener("input", (event) => {
-    const progress = getProgress(item.id);
+    const progress = getWritableProgress(item.id);
     progress.notes = event.target.value;
     progress.updatedAt = new Date().toISOString();
     scheduleSave(false);
@@ -756,7 +798,7 @@ function renderDetail() {
 }
 
 function toggleOwned(id) {
-  const progress = getProgress(id);
+  const progress = getWritableProgress(id);
   progress.owned = !progress.owned;
   if (progress.owned) {
     progress.wanted = false;
@@ -767,7 +809,7 @@ function toggleOwned(id) {
 }
 
 function toggleWanted(id) {
-  const progress = getProgress(id);
+  const progress = getWritableProgress(id);
   progress.wanted = !progress.wanted;
   if (progress.wanted && progress.priority === "none") {
     progress.priority = "medium";
@@ -781,6 +823,7 @@ function scheduleSave(withToast = true) {
   clearTimeout(state.saveTimer);
   state.saveTimer = setTimeout(async () => {
     try {
+      state.progress = pruneProgress(state.progress);
       state.progress.schemaVersion = 1;
       state.progress.updatedAt = new Date().toISOString();
 
@@ -991,7 +1034,7 @@ function applyOwnedCollectionImport({ characterId, categoryKey, ownedItems, tota
       continue;
     }
 
-    const progress = getProgress(item.id);
+    const progress = getWritableProgress(item.id);
     progress.owned = true;
     progress.wanted = false;
     progress.priority = progress.priority || "none";
