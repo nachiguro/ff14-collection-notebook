@@ -13,7 +13,9 @@ const state = {
   config: null,
   selectedId: null,
   detailVisible: true,
-  saveTimer: null
+  saveTimer: null,
+  pendingSaveToast: false,
+  searchTimer: null
 };
 
 const elements = {
@@ -85,6 +87,7 @@ const defaultAppConfig = {
 };
 
 const numberedSortCategories = new Set(["orchestrion", "card"]);
+const japaneseCollator = new Intl.Collator("ja", { numeric: true, sensitivity: "base" });
 
 const orchestrionCategoryOrder = [
   "フィールド1",
@@ -175,8 +178,12 @@ function bindEvents() {
   });
 
   elements.searchInput.addEventListener("input", (event) => {
-    state.search = event.target.value.trim().toLowerCase();
-    render();
+    clearTimeout(state.searchTimer);
+    const nextSearch = normalizeSearchText(event.target.value);
+    state.searchTimer = setTimeout(() => {
+      state.search = nextSearch;
+      render();
+    }, 180);
   });
 
   elements.sourceFilter.addEventListener("change", (event) => {
@@ -215,6 +222,17 @@ function bindEvents() {
   });
   elements.exportProgress.addEventListener("click", exportProgress);
   elements.importProgress.addEventListener("change", importProgress);
+  elements.minionGrid.addEventListener("click", handleGridClick);
+  elements.minionGrid.addEventListener("error", handleCollectionImageError, true);
+  elements.detailContent.addEventListener("error", handleCollectionImageError, true);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      flushSave(false);
+    }
+  });
+  window.addEventListener("pagehide", () => {
+    flushSave(false);
+  });
 }
 
 async function loadData() {
@@ -501,6 +519,10 @@ function itemsWithProgress() {
   }));
 }
 
+function normalizeSearchText(value) {
+  return String(value || "").normalize("NFKC").toLowerCase().trim();
+}
+
 function categoryItems() {
   return (state.catalog?.items || []).filter((item) => item.category === state.category);
 }
@@ -517,7 +539,7 @@ function filteredItems() {
       if (state.version !== "all" && patchMajor(item.patch) !== state.version) return false;
       if (!query) return true;
 
-      return [
+      return normalizeSearchText([
         item.nameJa,
         item.nameEn,
         item.patch,
@@ -528,11 +550,7 @@ function filteredItems() {
         item.descriptionJa,
         item.description,
         item.progress.notes
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase()
-        .includes(query);
+      ].filter(Boolean).join(" ")).includes(query);
     })
     .sort(sorter(state.sort));
 }
@@ -542,30 +560,34 @@ function sorter(sortKey) {
     return (a, b) =>
       orchestrionCategoryRank(a) - orchestrionCategoryRank(b) ||
       collectionNumber(a) - collectionNumber(b) ||
-      displayName(a).localeCompare(displayName(b));
+      compareText(displayName(a), displayName(b));
   }
 
   if (sortKey === "number-asc") {
     return (a, b) =>
       collectionNumberGroup(a) - collectionNumberGroup(b) ||
       collectionNumber(a) - collectionNumber(b) ||
-      displayName(a).localeCompare(displayName(b));
+      compareText(displayName(a), displayName(b));
   }
 
   if (sortKey === "name-asc") {
-    return (a, b) => displayName(a).localeCompare(displayName(b));
+    return (a, b) => compareText(displayName(a), displayName(b));
   }
 
   if (sortKey === "source-asc") {
-    return (a, b) => sourceLabel(a).localeCompare(sourceLabel(b)) || displayName(a).localeCompare(displayName(b));
+    return (a, b) => compareText(sourceLabel(a), sourceLabel(b)) || compareText(displayName(a), displayName(b));
   }
 
   if (sortKey === "priority-desc") {
     const score = { high: 3, medium: 2, low: 1, none: 0 };
-    return (a, b) => (score[b.progress.priority] || 0) - (score[a.progress.priority] || 0) || displayName(a).localeCompare(displayName(b));
+    return (a, b) => (score[b.progress.priority] || 0) - (score[a.progress.priority] || 0) || compareText(displayName(a), displayName(b));
   }
 
-  return (a, b) => patchNumber(b.patch) - patchNumber(a.patch) || displayName(a).localeCompare(displayName(b));
+  return (a, b) => patchNumber(b.patch) - patchNumber(a.patch) || compareText(displayName(a), displayName(b));
+}
+
+function compareText(a, b) {
+  return japaneseCollator.compare(String(a || ""), String(b || ""));
 }
 
 function orchestrionCategoryRank(item) {
@@ -660,7 +682,7 @@ function renderGrid(items) {
         <article class="minion-card${selected}${owned}${wanted}" data-id="${escapeAttr(item.id)}">
           <button class="card-hit" type="button" data-action="select" aria-label="${escapeAttr(displayName(item))}"></button>
           <div class="portrait-frame">
-            <img src="${escapeAttr(item.icon || item.image || "")}" alt="" loading="lazy" onerror="this.closest('.portrait-frame').classList.add('image-missing')">
+            <img src="${escapeAttr(item.icon || item.image || "")}" alt="" loading="lazy">
           </div>
           <div class="card-copy">
             <div class="card-title-row">
@@ -684,30 +706,48 @@ function renderGrid(items) {
       `;
     })
     .join("");
+}
 
-  elements.minionGrid.querySelectorAll(".minion-card").forEach((card) => {
-    card.addEventListener("click", (event) => {
-      const action = event.target.dataset.action;
-      const id = card.dataset.id;
-      if (!action) return;
+function handleGridClick(event) {
+  if (!(event.target instanceof Element)) {
+    return;
+  }
 
-      if (action === "select") {
-        state.selectedId = id;
-        state.detailVisible = true;
-        render();
-        return;
-      }
+  const actionTarget = event.target.closest("[data-action]");
+  const card = event.target.closest(".minion-card");
+  if (!actionTarget || !card || !elements.minionGrid.contains(card)) {
+    return;
+  }
 
-      if (action === "owned") {
-        toggleOwned(id);
-        return;
-      }
+  const action = actionTarget.dataset.action;
+  const id = card.dataset.id;
+  if (!id) {
+    return;
+  }
 
-      if (action === "wanted") {
-        toggleWanted(id);
-      }
-    });
-  });
+  if (action === "select") {
+    state.selectedId = id;
+    state.detailVisible = true;
+    render();
+    return;
+  }
+
+  if (action === "owned") {
+    toggleOwned(id);
+    return;
+  }
+
+  if (action === "wanted") {
+    toggleWanted(id);
+  }
+}
+
+function handleCollectionImageError(event) {
+  if (!(event.target instanceof HTMLImageElement)) {
+    return;
+  }
+
+  event.target.closest(".portrait-frame, .detail-image")?.classList.add("image-missing");
 }
 
 function renderDetail() {
@@ -722,7 +762,7 @@ function renderDetail() {
   elements.detailContent.innerHTML = `
     <div class="detail-hero">
       <div class="detail-image">
-        <img src="${escapeAttr(item.image || item.icon || "")}" alt="" onerror="this.closest('.detail-image').classList.add('image-missing')">
+        <img src="${escapeAttr(item.image || item.icon || "")}" alt="">
       </div>
       <div>
         <span class="kicker">Patch ${escapeHtml(item.patch || "-")}</span>
@@ -768,9 +808,7 @@ function renderDetail() {
     <textarea id="notesInput" spellcheck="false">${escapeHtml(item.progress.notes || "")}</textarea>
 
     <div class="reference-list">
-      ${(item.references || []).map((reference) => `
-        <a href="${escapeAttr(reference.url)}" target="_blank" rel="noreferrer">${escapeHtml(reference.title || "Reference")}</a>
-      `).join("")}
+      ${(item.references || []).map(referenceLinkHtml).join("")}
     </div>
   `;
 
@@ -821,26 +859,43 @@ function toggleWanted(id) {
 
 function scheduleSave(withToast = true) {
   clearTimeout(state.saveTimer);
-  state.saveTimer = setTimeout(async () => {
-    try {
-      state.progress = pruneProgress(state.progress);
-      state.progress.schemaVersion = 1;
-      state.progress.updatedAt = new Date().toISOString();
-
-      if (state.storageMode === "browser") {
-        saveStoredJson(storageKeys.progress, state.progress);
-      } else {
-        await fetchJson("/api/progress", {
-          method: "PUT",
-          body: JSON.stringify(state.progress)
-        });
-      }
-
-      if (withToast) showToast("保存しました");
-    } catch (error) {
-      showToast(error.message, "error");
-    }
+  state.pendingSaveToast = state.pendingSaveToast || withToast;
+  state.saveTimer = setTimeout(() => {
+    flushSave();
   }, 350);
+}
+
+async function flushSave(withToast = state.pendingSaveToast) {
+  if (!state.saveTimer && !state.pendingSaveToast) {
+    return;
+  }
+
+  clearTimeout(state.saveTimer);
+  state.saveTimer = null;
+  state.pendingSaveToast = false;
+
+  try {
+    await saveProgressNow();
+    if (withToast) showToast("保存しました");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function saveProgressNow() {
+  state.progress = pruneProgress(state.progress);
+  state.progress.schemaVersion = 1;
+  state.progress.updatedAt = new Date().toISOString();
+
+  if (state.storageMode === "browser") {
+    saveStoredJson(storageKeys.progress, state.progress);
+    return;
+  }
+
+  await fetchJson("/api/progress", {
+    method: "PUT",
+    body: JSON.stringify(state.progress)
+  });
 }
 
 async function refreshCatalog() {
@@ -860,7 +915,12 @@ async function refreshCatalog() {
     syncSortOptions();
     selectFirstItem();
     render();
-    showToast(`${result.count}件のコレクションを読み込みました`);
+    const failedCount = result.catalog?.refreshErrors?.length || 0;
+    if (failedCount) {
+      showToast(`${result.count}件を読み込みました（一部カテゴリは既存データを維持）`, "error");
+    } else {
+      showToast(`${result.count}件のコレクションを読み込みました`);
+    }
   } catch (error) {
     showToast(`更新できませんでした: ${error.message}`, "error");
   } finally {
@@ -1150,6 +1210,10 @@ function exportProgress() {
 async function importProgress(event) {
   const file = event.target.files?.[0];
   if (!file) return;
+  if (!confirm("現在の進捗を読み込み内容で上書きします。よろしいですか？")) {
+    event.target.value = "";
+    return;
+  }
 
   try {
     const text = await file.text();
@@ -1209,6 +1273,24 @@ function tradeableChip(item) {
   return "";
 }
 
+function referenceLinkHtml(reference) {
+  const url = safeExternalUrl(reference?.url);
+  if (!url) {
+    return "";
+  }
+
+  return `<a href="${escapeAttr(url)}" target="_blank" rel="noreferrer">${escapeHtml(reference.title || "Reference")}</a>`;
+}
+
+function safeExternalUrl(value) {
+  try {
+    const url = new URL(String(value || ""), location.href);
+    return ["http:", "https:"].includes(url.protocol) ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
 function formatDate(value) {
   if (!value) return "Seed";
   const date = new Date(value);
@@ -1223,7 +1305,7 @@ function showToast(message, tone = "normal") {
   clearTimeout(elements.toast.hideTimer);
   elements.toast.hideTimer = setTimeout(() => {
     elements.toast.classList.remove("visible");
-  }, tone === "error" ? 15000 : 3200);
+  }, tone === "error" ? 8000 : 3200);
 }
 
 function escapeHtml(value) {
