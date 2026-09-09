@@ -209,6 +209,33 @@ button {
   flex-wrap: wrap;
 }
 
+.save-status {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.save-status::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--green);
+}
+
+.save-status.error {
+  color: #f2b7bc;
+}
+
+.save-status.error::before {
+  background: #d8858b;
+}
+
 .button,
 .file-label,
 select {
@@ -422,7 +449,7 @@ select:hover {
 }
 
 .minion-grid.view-grid {
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, max(168px, calc((100% - 48px) / 5))), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
 }
 
 .minion-grid.view-list {
@@ -1201,8 +1228,31 @@ select:focus {
   }
 
   .detail-panel {
-    position: relative;
+    position: fixed;
     top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    width: min(460px, 100vw);
+    min-height: 0;
+    max-height: 100dvh;
+    overflow-y: auto;
+    border-top: 0;
+    border-right: 0;
+    border-bottom: 0;
+    border-radius: 0;
+  }
+
+  body.detail-drawer-open {
+    overflow: hidden;
+  }
+
+  body.detail-drawer-open::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 29;
+    background: rgba(6, 8, 13, 0.72);
   }
 }
 
@@ -1216,13 +1266,29 @@ select:focus {
     flex-direction: column;
   }
 
-  .stats-band,
+  .stats-band {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin: 10px 0;
+  }
+
+  .stat-tile {
+    min-height: 72px;
+    padding: 10px 12px;
+  }
+
+  .stat-tile strong {
+    font-size: 22px;
+  }
+
   .controls-band {
     grid-template-columns: 1fr;
+    gap: 8px;
+    margin-bottom: 10px;
   }
 
   .select-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .minion-grid.view-grid {
@@ -1255,16 +1321,18 @@ select:focus {
   }
 
   .segmented {
-    grid-auto-flow: row;
+    grid-auto-flow: column;
   }
 
   .segment {
-    border-right: 0;
-    border-bottom: 1px solid rgba(214, 184, 114, 0.2);
+    min-width: 0;
+    padding: 0 6px;
+    border-right: 1px solid rgba(214, 184, 114, 0.2);
+    border-bottom: 0;
   }
 
   .segment:last-child {
-    border-bottom: 0;
+    border-right: 0;
   }
 }
 
@@ -1283,8 +1351,14 @@ select:focus {
   }
 
   .action-row {
-    display: grid;
-    grid-template-columns: 1fr;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+
+  .action-row .button,
+  .action-row .file-label {
+    flex: 0 0 auto;
   }
 
   .import-dialog-header,

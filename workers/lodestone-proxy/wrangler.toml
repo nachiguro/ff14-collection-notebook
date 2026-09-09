@@ -1,0 +1,5 @@
+name = "ff14-collection-lodestone-proxy"
+main = "src/index.js"
+compatibility_date = "2026-06-14"
+workers_dev = true
+preview_urls = false

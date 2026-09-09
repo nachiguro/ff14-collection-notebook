@@ -52,6 +52,10 @@
               <span class="nav-glyph" aria-hidden="true"></span>
               傘/ファッションアクセサリー
             </button>
+            <button class="nav-item category-button" data-category="beast" type="button">
+              <span class="nav-glyph" aria-hidden="true"></span>
+              魔獣図鑑
+            </button>
           </nav>
         </div>
 
@@ -68,10 +72,12 @@
             <h2 id="categoryTitle">ミニオン</h2>
           </div>
           <div class="action-row">
+            <span id="saveStatus" class="save-status" role="status">保存済み</span>
             <button id="openLodestoneTool" class="button ghost" type="button">Lodestone取込ツール</button>
             <button id="openScreenshotImport" class="button ghost" type="button">画像取込</button>
             <button id="refreshCatalog" class="button ghost" type="button">カタログ更新</button>
             <button id="exportProgress" class="button ghost" type="button">書き出し</button>
+            <button id="restoreProgressImport" class="button ghost" type="button" hidden>直前の取込を元に戻す</button>
             <label class="button ghost file-label">
               読み込み
               <input id="importProgress" type="file" accept="application/json">
@@ -149,7 +155,7 @@
             <div id="minionGrid" class="minion-grid"></div>
           </section>
 
-          <aside class="detail-panel" aria-label="Selected collection item">
+          <aside class="detail-panel" aria-label="Selected collection item" aria-hidden="false" tabindex="-1">
             <button id="detailClose" class="detail-close" type="button" aria-label="詳細を閉じる" title="閉じる">×</button>
             <div id="detailContent" class="detail-empty">
               <div class="empty-sigil" aria-hidden="true"></div>
@@ -252,6 +258,7 @@
                   <option value="spell">青魔法</option>
                   <option value="hairstyle">髪型</option>
                   <option value="fashion">傘/ファッションアクセサリー</option>
+                  <option value="beast">魔獣図鑑</option>
                 </select>
                 <label class="button file-label">
                   JSONを選択

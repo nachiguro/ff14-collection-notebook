@@ -13,8 +13,15 @@ const state = {
   config: null,
   selectedId: null,
   detailVisible: true,
+  detailReturnFocusId: null,
   saveTimer: null,
   pendingSaveToast: false,
+  progressRevision: 0,
+  savedProgressRevision: 0,
+  saveInFlight: null,
+  saveError: null,
+  lodestoneImportRunning: false,
+  lodestoneImportId: 0,
   searchTimer: null,
   screenshotImportRunning: false,
   screenshotCandidates: [],
@@ -31,6 +38,8 @@ const elements = {
   refreshCatalog: document.querySelector("#refreshCatalog"),
   exportProgress: document.querySelector("#exportProgress"),
   importProgress: document.querySelector("#importProgress"),
+  restoreProgressImport: document.querySelector("#restoreProgressImport"),
+  saveStatus: document.querySelector("#saveStatus"),
   openLodestoneTool: document.querySelector("#openLodestoneTool"),
   lodestoneToolDialog: document.querySelector("#lodestoneToolDialog"),
   closeLodestoneTool: document.querySelector("#closeLodestoneTool"),
@@ -96,12 +105,14 @@ const categoryLabels = {
   emote: "エモート",
   spell: "青魔法",
   hairstyle: "髪型",
-  fashion: "傘/ファッションアクセサリー"
+  fashion: "傘/ファッションアクセサリー",
+  beast: "魔獣図鑑"
 };
 
 const lodestoneCategories = {
   mount: "mounts",
-  minion: "minions"
+  minion: "minions",
+  emote: "emotes"
 };
 
 const lodestoneProxyTooltipBatchSize = 20;
@@ -109,7 +120,9 @@ const tesseractScriptUrl = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tes
 
 const storageKeys = {
   progress: "ff14CollectionNotebook.progress.v1",
-  settings: "ff14CollectionNotebook.settings.v1"
+  settings: "ff14CollectionNotebook.settings.v1",
+  progressImportBackup: "ff14CollectionNotebook.progressImportBackup.v1",
+  progressRecovery: "ff14CollectionNotebook.progressRecovery.v1"
 };
 
 const defaultProgress = {
@@ -129,7 +142,7 @@ const defaultAppConfig = {
   lodestoneProxyUrl: ""
 };
 
-const numberedSortCategories = new Set(["orchestrion", "card"]);
+const numberedSortCategories = new Set(["orchestrion", "card", "beast"]);
 const japaneseCollator = new Intl.Collator("ja", { numeric: true, sensitivity: "base" });
 
 const orchestrionCategoryOrder = [
@@ -203,6 +216,7 @@ function bindEvents() {
       state.sourceType = "all";
       state.version = "all";
       state.selectedId = null;
+      state.detailVisible = !isCompactDetail();
       syncCategoryButtons();
       populateSourceFilter();
       populateVersionFilter();
@@ -255,8 +269,7 @@ function bindEvents() {
 
   elements.refreshCatalog.addEventListener("click", refreshCatalog);
   elements.detailClose.addEventListener("click", () => {
-    state.detailVisible = false;
-    syncDetailPanel();
+    closeDetailPanel(true);
   });
   elements.importLodestone.addEventListener("click", importLodestone);
   elements.lodestoneInput.addEventListener("keydown", (event) => {
@@ -266,6 +279,7 @@ function bindEvents() {
   });
   elements.exportProgress.addEventListener("click", exportProgress);
   elements.importProgress.addEventListener("change", importProgress);
+  elements.restoreProgressImport.addEventListener("click", restoreProgressImport);
   elements.openLodestoneTool.addEventListener("click", openLodestoneTool);
   elements.closeLodestoneTool.addEventListener("click", closeLodestoneTool);
   elements.cancelLodestoneTool.addEventListener("click", closeLodestoneTool);
@@ -301,11 +315,24 @@ function bindEvents() {
   elements.detailContent.addEventListener("error", handleCollectionImageError, true);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
-      flushSave(false);
+      flushSave(false, false, true);
     }
   });
   window.addEventListener("pagehide", () => {
-    flushSave(false);
+    flushSave(false, false, true);
+  });
+  window.addEventListener("online", () => {
+    if (hasUnsavedProgress()) flushSave(false);
+  });
+  window.addEventListener("resize", () => {
+    if (!isCompactDetail() && state.selectedId) state.detailVisible = true;
+    syncDetailPanel();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && isCompactDetail() && state.detailVisible) {
+      event.preventDefault();
+      closeDetailPanel(true);
+    }
   });
 }
 
@@ -318,7 +345,16 @@ async function loadData() {
     state.settings = settings;
     state.storageMode = storageMode;
     state.config = { ...defaultAppConfig, ...(config || {}) };
+    elements.refreshCatalog.hidden = storageMode === "browser";
     state.sort = settings.defaultSort || "patch-desc";
+    state.detailVisible = !isCompactDetail();
+    const recovered = loadNewerProgressRecovery(state.progress);
+    if (recovered) state.progress = recovered;
+    state.progressRevision = recovered ? 1 : 0;
+    state.savedProgressRevision = 0;
+    state.saveError = recovered ? "前回の未保存データを復元しました" : null;
+    syncSaveStatus();
+    syncRestoreProgressAvailability();
     syncCategoryButtons();
     populateSourceFilter();
     populateVersionFilter();
@@ -326,6 +362,10 @@ async function loadData() {
     syncLodestoneAvailability();
     selectFirstItem();
     render();
+    if (recovered) {
+      showToast("前回の未保存データを復元しました");
+      state.saveTimer = setTimeout(() => flushSave(false), 500);
+    }
   } catch (error) {
     showToast(error.message, "error");
   }
@@ -426,6 +466,18 @@ function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function loadNewerProgressRecovery(persistedProgress) {
+  try {
+    const recovery = JSON.parse(localStorage.getItem(storageKeys.progressRecovery) || "null");
+    if (!isPlainObject(recovery) || !recovery.savedAt || !recovery.progress) return null;
+    const persistedAt = Date.parse(persistedProgress?.updatedAt || "") || 0;
+    const recoveryAt = Date.parse(recovery.savedAt) || 0;
+    return recoveryAt > persistedAt ? validateProgressPayload(recovery.progress) : null;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeProgress(progress) {
   const normalized = {
     schemaVersion: 1,
@@ -451,6 +503,61 @@ function normalizeProgress(progress) {
   }
 
   return normalized;
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function validateProgressPayload(payload) {
+  if (!isPlainObject(payload)) {
+    throw new Error("進捗JSONのルートはオブジェクトである必要があります");
+  }
+  if (payload.schemaVersion !== undefined && payload.schemaVersion !== 1) {
+    throw new Error(`未対応の進捗バージョンです: ${String(payload.schemaVersion)}`);
+  }
+  if (!isPlainObject(payload.items)) {
+    throw new Error("進捗JSONに正しいitemsオブジェクトがありません");
+  }
+
+  for (const [itemId, item] of Object.entries(payload.items)) {
+    if (!itemId || !isPlainObject(item)) {
+      throw new Error(`items.${itemId || "(空のID)"} が正しい進捗ではありません`);
+    }
+    if (item.owned !== undefined && typeof item.owned !== "boolean") {
+      throw new Error(`items.${itemId}.owned は真偽値である必要があります`);
+    }
+    if (item.wanted !== undefined && typeof item.wanted !== "boolean") {
+      throw new Error(`items.${itemId}.wanted は真偽値である必要があります`);
+    }
+    if (item.priority !== undefined && !Object.hasOwn(priorityLabels, item.priority)) {
+      throw new Error(`items.${itemId}.priority の値が不正です`);
+    }
+    if (item.notes !== undefined && typeof item.notes !== "string") {
+      throw new Error(`items.${itemId}.notes は文字列である必要があります`);
+    }
+    if (item.updatedAt !== undefined && item.updatedAt !== null && typeof item.updatedAt !== "string") {
+      throw new Error(`items.${itemId}.updatedAt は文字列またはnullである必要があります`);
+    }
+  }
+  if (payload.lodestone !== undefined && !isPlainObject(payload.lodestone)) {
+    throw new Error("lodestone はオブジェクトである必要があります");
+  }
+  if (payload.screenshot !== undefined && !isPlainObject(payload.screenshot)) {
+    throw new Error("screenshot はオブジェクトである必要があります");
+  }
+
+  return normalizeProgress(payload);
+}
+
+function progressSummary(progress) {
+  const items = Object.values(progress.items || {});
+  return {
+    entries: items.length,
+    owned: items.filter((item) => item.owned).length,
+    wanted: items.filter((item) => item.wanted).length,
+    notes: items.filter((item) => item.notes).length
+  };
 }
 
 function createDefaultProgressItem() {
@@ -552,11 +659,11 @@ function syncCategoryButtons() {
 
 function syncLodestoneAvailability() {
   const supportsLodestone = Boolean(lodestoneCategories[state.category]);
-  elements.lodestoneInput.disabled = !supportsLodestone;
-  elements.importLodestone.disabled = !supportsLodestone;
+  elements.lodestoneInput.disabled = !supportsLodestone || state.lodestoneImportRunning;
+  elements.importLodestone.disabled = !supportsLodestone || state.lodestoneImportRunning;
   elements.lodestoneInput.placeholder = supportsLodestone
     ? "Lodestone キャラクターURL / ID"
-    : "Lodestone読込はミニオン/マウントのみ対応";
+    : "Lodestone読込はマウント/ミニオン/エモートのみ対応";
 }
 
 function syncViewButtons() {
@@ -566,8 +673,43 @@ function syncViewButtons() {
 }
 
 function syncDetailPanel() {
+  const compact = isCompactDetail();
   elements.contentGrid.classList.toggle("detail-collapsed", !state.detailVisible);
   elements.detailPanel.classList.toggle("collapsed", !state.detailVisible);
+  elements.detailPanel.setAttribute("aria-hidden", String(!state.detailVisible));
+  if (compact) {
+    elements.detailPanel.setAttribute("role", "dialog");
+    elements.detailPanel.setAttribute("aria-modal", "true");
+  } else {
+    elements.detailPanel.removeAttribute("role");
+    elements.detailPanel.removeAttribute("aria-modal");
+  }
+  document.body.classList.toggle("detail-drawer-open", compact && state.detailVisible);
+}
+
+function isCompactDetail() {
+  return window.matchMedia("(max-width: 1180px)").matches;
+}
+
+function openDetailPanel(itemId) {
+  state.selectedId = itemId;
+  state.detailReturnFocusId = itemId;
+  state.detailVisible = true;
+  render();
+  if (isCompactDetail()) {
+    requestAnimationFrame(() => elements.detailClose.focus({ preventScroll: true }));
+  }
+}
+
+function closeDetailPanel(restoreFocus = false) {
+  const returnId = state.detailReturnFocusId || state.selectedId;
+  state.detailVisible = false;
+  syncDetailPanel();
+  if (restoreFocus && returnId) {
+    requestAnimationFrame(() => {
+      elements.minionGrid.querySelector(`[data-id="${CSS.escape(returnId)}"] [data-action="select"]`)?.focus({ preventScroll: true });
+    });
+  }
 }
 
 function selectFirstItem() {
@@ -777,8 +919,8 @@ function renderGrid(items) {
             </div>
           </div>
           <div class="card-actions">
-            <button class="icon-button ${item.progress.owned ? "active" : ""}" data-action="owned" title="取得済み" aria-label="取得済み"></button>
-            <button class="icon-button star ${item.progress.wanted ? "active" : ""}" data-action="wanted" title="欲しい" aria-label="欲しい"></button>
+            <button class="icon-button ${item.progress.owned ? "active" : ""}" data-action="owned" title="取得済み" aria-label="取得済み" aria-pressed="${item.progress.owned}"></button>
+            <button class="icon-button star ${item.progress.wanted ? "active" : ""}" data-action="wanted" title="欲しい" aria-label="欲しい" aria-pressed="${item.progress.wanted}"></button>
           </div>
         </article>
       `;
@@ -804,9 +946,7 @@ function handleGridClick(event) {
   }
 
   if (action === "select") {
-    state.selectedId = id;
-    state.detailVisible = true;
-    render();
+    openDetailPanel(id);
     return;
   }
 
@@ -856,8 +996,8 @@ function renderDetail() {
     </div>
 
     <div class="detail-actions">
-      <button class="button ${item.progress.owned ? "active" : ""}" data-detail-action="owned" type="button">取得済み</button>
-      <button class="button ${item.progress.wanted ? "active" : ""}" data-detail-action="wanted" type="button">欲しい</button>
+      <button class="button ${item.progress.owned ? "active" : ""}" data-detail-action="owned" type="button" aria-pressed="${item.progress.owned}">取得済み</button>
+      <button class="button ${item.progress.wanted ? "active" : ""}" data-detail-action="wanted" type="button" aria-pressed="${item.progress.wanted}">欲しい</button>
       <select id="prioritySelect" aria-label="Priority">
         ${Object.entries(priorityLabels).map(([value, label]) => `
           <option value="${value}" ${item.progress.priority === value ? "selected" : ""}>優先度 ${label}</option>
@@ -892,8 +1032,8 @@ function renderDetail() {
 
   elements.detailContent.querySelectorAll("[data-detail-action]").forEach((button) => {
     button.addEventListener("click", () => {
-      if (button.dataset.detailAction === "owned") toggleOwned(item.id);
-      if (button.dataset.detailAction === "wanted") toggleWanted(item.id);
+      if (button.dataset.detailAction === "owned") toggleOwned(item.id, "[data-detail-action=owned]");
+      if (button.dataset.detailAction === "wanted") toggleWanted(item.id, "[data-detail-action=wanted]");
     });
   });
 
@@ -902,7 +1042,8 @@ function renderDetail() {
     progress.priority = event.target.value;
     progress.updatedAt = new Date().toISOString();
     scheduleSave();
-    render();
+    renderStats();
+    renderGrid(filteredItems());
   });
 
   elements.detailContent.querySelector("#notesInput").addEventListener("input", (event) => {
@@ -913,7 +1054,7 @@ function renderDetail() {
   });
 }
 
-function toggleOwned(id) {
+function toggleOwned(id, restoreDetailFocus = "") {
   const progress = getWritableProgress(id);
   progress.owned = !progress.owned;
   if (progress.owned) {
@@ -922,9 +1063,10 @@ function toggleOwned(id) {
   progress.updatedAt = new Date().toISOString();
   scheduleSave();
   render();
+  restoreDetailControlFocus(restoreDetailFocus);
 }
 
-function toggleWanted(id) {
+function toggleWanted(id, restoreDetailFocus = "") {
   const progress = getWritableProgress(id);
   progress.wanted = !progress.wanted;
   if (progress.wanted && progress.priority === "none") {
@@ -933,46 +1075,124 @@ function toggleWanted(id) {
   progress.updatedAt = new Date().toISOString();
   scheduleSave();
   render();
+  restoreDetailControlFocus(restoreDetailFocus);
+}
+
+function restoreDetailControlFocus(selector) {
+  if (!selector) return;
+  requestAnimationFrame(() => elements.detailContent.querySelector(selector)?.focus({ preventScroll: true }));
 }
 
 function scheduleSave(withToast = true) {
+  state.progressRevision += 1;
   clearTimeout(state.saveTimer);
   state.pendingSaveToast = state.pendingSaveToast || withToast;
+  state.saveError = null;
+  storeProgressRecovery();
+  syncSaveStatus();
   state.saveTimer = setTimeout(() => {
     flushSave();
   }, 350);
 }
 
-async function flushSave(withToast = state.pendingSaveToast) {
-  if (!state.saveTimer && !state.pendingSaveToast) {
+function hasUnsavedProgress() {
+  return state.savedProgressRevision < state.progressRevision;
+}
+
+function syncSaveStatus() {
+  if (!elements.saveStatus) return;
+  elements.saveStatus.classList.toggle("error", Boolean(state.saveError));
+  if (state.saveInFlight) {
+    elements.saveStatus.textContent = "保存中";
+  } else if (state.saveError) {
+    elements.saveStatus.textContent = "未保存・再試行待ち";
+  } else if (hasUnsavedProgress()) {
+    elements.saveStatus.textContent = "未保存";
+  } else {
+    elements.saveStatus.textContent = "保存済み";
+  }
+}
+
+function storeProgressRecovery() {
+  try {
+    saveStoredJson(storageKeys.progressRecovery, {
+      savedAt: new Date().toISOString(),
+      progress: pruneProgress(state.progress)
+    });
+  } catch (error) {
+    state.saveError = `ブラウザに復旧データを保持できません: ${error.message}`;
+  }
+}
+
+async function flushSave(withToast = state.pendingSaveToast, rethrow = false, keepalive = false) {
+  if (state.pendingSaveToast && !hasUnsavedProgress()) {
+    state.progressRevision += 1;
+    storeProgressRecovery();
+  }
+  clearTimeout(state.saveTimer);
+  state.saveTimer = null;
+
+  if (state.saveInFlight) {
+    try {
+      await state.saveInFlight;
+    } catch {
+      // The active save reports and preserves its own failure state.
+    }
+    if (hasUnsavedProgress()) return flushSave(withToast, rethrow, keepalive);
     return;
   }
 
-  clearTimeout(state.saveTimer);
-  state.saveTimer = null;
+  if (!hasUnsavedProgress()) return;
+
+  const targetRevision = state.progressRevision;
+  const payload = pruneProgress(state.progress);
+  payload.schemaVersion = 1;
+  payload.updatedAt = new Date().toISOString();
+  const savePromise = persistProgress(payload, keepalive);
+  state.saveInFlight = savePromise;
   state.pendingSaveToast = false;
+  syncSaveStatus();
 
   try {
-    await saveProgressNow();
+    await savePromise;
+    state.savedProgressRevision = Math.max(state.savedProgressRevision, targetRevision);
+    state.progress.updatedAt = payload.updatedAt;
+    state.saveError = null;
+    if (!hasUnsavedProgress()) localStorage.removeItem(storageKeys.progressRecovery);
     if (withToast) showToast("保存しました");
   } catch (error) {
-    showToast(error.message, "error");
+    state.saveError = error.message;
+    storeProgressRecovery();
+    showToast(`保存できませんでした: ${error.message}`, "error");
+    state.saveTimer = setTimeout(() => flushSave(false), 5000);
+    if (rethrow) throw error;
+  } finally {
+    state.saveInFlight = null;
+    syncSaveStatus();
+    if (!state.saveError && hasUnsavedProgress() && !state.saveTimer) {
+      state.saveTimer = setTimeout(() => flushSave(false), 0);
+    }
   }
 }
 
 async function saveProgressNow() {
-  state.progress = pruneProgress(state.progress);
-  state.progress.schemaVersion = 1;
-  state.progress.updatedAt = new Date().toISOString();
+  if (!hasUnsavedProgress()) {
+    state.progressRevision += 1;
+    storeProgressRecovery();
+  }
+  return flushSave(false, true);
+}
 
+async function persistProgress(progress, keepalive = false) {
   if (state.storageMode === "browser") {
-    saveStoredJson(storageKeys.progress, state.progress);
+    saveStoredJson(storageKeys.progress, progress);
     return;
   }
 
   await fetchJson("/api/progress", {
     method: "PUT",
-    body: JSON.stringify(state.progress)
+    body: JSON.stringify(progress),
+    keepalive
   });
 }
 
@@ -1008,9 +1228,13 @@ async function refreshCatalog() {
 }
 
 async function importLodestone() {
-  const endpointCategory = lodestoneCategories[state.category];
+  if (state.lodestoneImportRunning) return;
+
+  const categoryKey = state.category;
+  const categoryName = categoryLabel(categoryKey);
+  const endpointCategory = lodestoneCategories[categoryKey];
   if (!endpointCategory) {
-    showToast(`${categoryLabel(state.category)}はLodestone読込に対応していません`, "error");
+    showToast(`${categoryName}はLodestone読込に対応していません`, "error");
     return;
   }
 
@@ -1020,34 +1244,26 @@ async function importLodestone() {
     return;
   }
 
-  elements.importLodestone.disabled = true;
+  const operationId = ++state.lodestoneImportId;
+  state.lodestoneImportRunning = true;
+  syncLodestoneAvailability();
   elements.importLodestone.textContent = "読込中";
 
   try {
-    if (state.storageMode === "browser") {
-      const result = await importLodestoneViaFfxivCollect(character, endpointCategory, state.category);
-      state.progress = normalizeProgress(result.progress);
-      render();
-      showToast(`Lodestone: ${categoryLabel(state.category)} ${result.read}件中 ${result.matched}件を取得済みにしました`);
-      return;
-    }
-
-    const result = await fetchJson(`/api/lodestone/${endpointCategory}/import`, {
-      method: "POST",
-      body: JSON.stringify({ character })
-    });
+    const result = await importLodestoneViaFfxivCollect(character, endpointCategory, categoryKey);
+    if (operationId !== state.lodestoneImportId) return;
     state.progress = normalizeProgress(result.progress);
-    state.catalog = await fetchJson("/api/catalog");
-    populateSourceFilter();
-    populateVersionFilter();
-    syncSortOptions();
+    await saveProgressNow();
     render();
-    showToast(`Lodestone: ${categoryLabel(state.category)} ${result.read}件中 ${result.matched}件を取得済みにしました`);
+    showToast(`Lodestone: ${categoryName} 新規 ${result.newOwned}件、登録済み ${result.alreadyOwned}件${result.conflicts ? `、競合 ${result.conflicts}件` : ""}${result.completeness === "partial" ? "（一部取得）" : ""}`);
   } catch (error) {
     showToast(`読み込めませんでした: ${error.message}`, "error");
   } finally {
-    elements.importLodestone.textContent = "Lodestone読込";
-    syncLodestoneAvailability();
+    if (operationId === state.lodestoneImportId) {
+      state.lodestoneImportRunning = false;
+      elements.importLodestone.textContent = "Lodestone読込";
+      syncLodestoneAvailability();
+    }
   }
 }
 
@@ -1057,38 +1273,57 @@ async function importLodestoneViaFfxivCollect(characterInput, endpointCategory, 
     throw new Error("LodestoneのキャラクターURL、またはIDを入力してください");
   }
 
+  const collection = await fetchOwnedCollectionByCharacter(characterId, endpointCategory, categoryKey, true);
+  saveStoredJson(storageKeys.progressImportBackup, pruneProgress(state.progress));
+  syncRestoreProgressAvailability();
+  return applyOwnedCollectionImport(collection);
+}
+
+async function fetchOwnedCollectionByCharacter(characterId, endpointCategory, categoryKey, allowProxy = false) {
   try {
     const characterUrl = `https://ffxivcollect.com/api/characters/${encodeURIComponent(characterId)}`;
     const character = await fetchExternalJson(characterUrl);
     const categoryStatus = character?.[endpointCategory];
     if (categoryStatus?.public === false) {
-      throw new Error(`${categoryLabel(categoryKey)}の公開設定がオフになっているようです。Lodestone側の公開設定を確認してください。`);
+      throw new Error(`${categoryLabel(categoryKey)}の公開設定がオフになっています`);
     }
 
-    const ownedUrl = `${characterUrl}/${endpointCategory}/owned`;
-    const ownedItems = await fetchExternalJson(ownedUrl);
+    const ownedItems = await fetchExternalJson(`${characterUrl}/${endpointCategory}/owned`);
     if (!Array.isArray(ownedItems)) {
       throw new Error("FFXIV Collectから所持情報を読み取れませんでした");
     }
 
-    return applyOwnedCollectionImport({
+    const fetchedAt = new Date().toISOString();
+    return {
       characterId,
       categoryKey,
       ownedItems,
       total: categoryStatus?.count ?? ownedItems.length,
+      expectedOwnedCount: categoryStatus?.count ?? null,
+      discoveredCount: ownedItems.length,
+      parsedCount: ownedItems.length,
+      failedCount: 0,
+      completeness: categoryStatus?.count == null
+        ? "unknown"
+        : Number(categoryStatus.count) === ownedItems.length ? "complete" : "partial",
       source: "FFXIV Collect API",
+      fetchedAt,
+      sourceUpdatedAt: character?.last_parsed ?? character?.lastParsed ?? character?.updated_at ?? null,
       characterName: character?.name || "",
       server: character?.server || ""
-    });
+    };
   } catch (error) {
-    return importLodestoneViaProxy(characterId, endpointCategory, categoryKey, error);
+    if (allowProxy && ["mount", "minion"].includes(categoryKey)) {
+      return fetchOwnedCollectionViaProxy(characterId, endpointCategory, categoryKey, error);
+    }
+    throw error;
   }
 }
 
-async function importLodestoneViaProxy(characterId, endpointCategory, categoryKey, originalError) {
+async function fetchOwnedCollectionViaProxy(characterId, endpointCategory, categoryKey, originalError) {
   const proxyBaseUrl = String(state.config?.lodestoneProxyUrl || "").trim().replace(/\/+$/, "");
   if (!proxyBaseUrl) {
-    throw new Error(`ブラウザ版のLodestone読込にはCloudflare Workerの設定が必要です。FFXIV Collect API: ${originalError.message}`);
+    throw new Error(`FFXIV Collect API: ${originalError.message}`);
   }
 
   const collectionUrl = new URL(`${proxyBaseUrl}/collection`);
@@ -1096,48 +1331,87 @@ async function importLodestoneViaProxy(characterId, endpointCategory, categoryKe
   collectionUrl.searchParams.set("category", categoryKey);
 
   const collection = await fetchExternalJson(collectionUrl.toString());
-  const tooltipUrls = Array.isArray(collection.tooltipUrls) ? collection.tooltipUrls : [];
+  const tooltipUrls = Array.from(new Set(Array.isArray(collection.tooltipUrls) ? collection.tooltipUrls : []));
+  const expectedOwnedCount = Number.isInteger(collection.expectedOwnedCount)
+    ? collection.expectedOwnedCount
+    : Number.isInteger(collection.total) ? collection.total : null;
 
-  if (tooltipUrls.length === 0) {
+  if (tooltipUrls.length === 0 && expectedOwnedCount !== 0) {
     throw new Error(`${categoryLabel(categoryKey)}のLodestone一覧を読み取れませんでした。公開設定を確認してください。`);
   }
 
   const ownedItems = [];
+  const failedUrls = [];
+
+  const fetchTooltipBatch = async (batch) => {
+    const result = await fetchExternalJson(`${proxyBaseUrl}/tooltips`, {
+      method: "POST",
+      body: JSON.stringify({ category: categoryKey, urls: batch })
+    });
+    if (Array.isArray(result.items)) ownedItems.push(...result.items);
+    if (Array.isArray(result.errors)) {
+      failedUrls.push(...result.errors.map((entry) => entry?.url).filter(Boolean));
+    }
+  };
 
   for (let index = 0; index < tooltipUrls.length; index += lodestoneProxyTooltipBatchSize) {
     const batch = tooltipUrls.slice(index, index + lodestoneProxyTooltipBatchSize);
     elements.importLodestone.textContent = `読込中 ${Math.min(index + batch.length, tooltipUrls.length)}/${tooltipUrls.length}`;
-
-    const tooltipResult = await fetchExternalJson(`${proxyBaseUrl}/tooltips`, {
-      method: "POST",
-      body: JSON.stringify({
-        category: categoryKey,
-        urls: batch
-      })
-    });
-
-    if (Array.isArray(tooltipResult.items)) {
-      ownedItems.push(...tooltipResult.items);
-    }
+    await fetchTooltipBatch(batch);
   }
 
-  if (ownedItems.length === 0) {
+  const retryUrls = Array.from(new Set(failedUrls));
+  failedUrls.length = 0;
+  for (let index = 0; index < retryUrls.length; index += lodestoneProxyTooltipBatchSize) {
+    const batch = retryUrls.slice(index, index + lodestoneProxyTooltipBatchSize);
+    elements.importLodestone.textContent = `再試行 ${Math.min(index + batch.length, retryUrls.length)}/${retryUrls.length}`;
+    await fetchTooltipBatch(batch);
+  }
+
+  if (ownedItems.length === 0 && expectedOwnedCount !== 0) {
     throw new Error("Lodestoneから取得済みアイテムを読み取れませんでした。");
   }
 
-  return applyOwnedCollectionImport({
+  const uniqueItems = Array.from(new Map(ownedItems.map((item) => [item.url || normalizeCollectionName(item.nameJa), item])).values());
+  const completeness = failedUrls.length || (expectedOwnedCount != null && uniqueItems.length !== expectedOwnedCount)
+    ? "partial"
+    : expectedOwnedCount == null ? "unknown" : "complete";
+  return {
     characterId: collection.characterId || characterId,
     categoryKey,
-    ownedItems,
-    total: collection.total ?? ownedItems.length,
+    ownedItems: uniqueItems,
+    total: expectedOwnedCount ?? uniqueItems.length,
+    expectedOwnedCount,
+    discoveredCount: tooltipUrls.length,
+    parsedCount: uniqueItems.length,
+    failedCount: failedUrls.length,
+    failedUrls: Array.from(new Set(failedUrls)),
+    completeness,
     source: "Lodestone via Cloudflare Workers",
+    fetchedAt: new Date().toISOString(),
+    sourceUpdatedAt: null,
     characterName: collection.characterName || "",
     server: collection.server || ""
-  });
+  };
 }
 
-function applyOwnedCollectionImport({ characterId, categoryKey, ownedItems, total, source, characterName, server }) {
-  const catalogItems = categoryItems();
+function applyOwnedCollectionImport({
+  characterId,
+  categoryKey,
+  ownedItems,
+  total,
+  expectedOwnedCount = null,
+  discoveredCount = ownedItems.length,
+  parsedCount = ownedItems.length,
+  failedCount = 0,
+  completeness = "unknown",
+  source,
+  fetchedAt = null,
+  sourceUpdatedAt = null,
+  characterName,
+  server
+}) {
+  const catalogItems = (state.catalog?.items || []).filter((item) => item.category === categoryKey);
   const byItemId = new Map();
   const byExternalId = new Map();
   const byName = new Map();
@@ -1152,26 +1426,43 @@ function applyOwnedCollectionImport({ characterId, categoryKey, ownedItems, tota
 
     [item.nameJa, item.nameEn, displayName(item)].forEach((name) => {
       const normalized = normalizeCollectionName(name);
-      if (normalized) byName.set(normalized, item);
+      if (!normalized) return;
+      const values = byName.get(normalized) || [];
+      if (!values.some((value) => value.id === item.id)) values.push(item);
+      byName.set(normalized, values);
     });
   }
 
   const matched = [];
   const unmatched = [];
+  const conflicts = [];
+  let alreadyOwned = 0;
+  let newOwned = 0;
   const importedAt = new Date().toISOString();
 
   for (const ownedItem of ownedItems) {
     const externalId = Number(ownedItem?.id);
-    const item =
-      byItemId.get(ownedItem?.itemId) ||
-      byExternalId.get(externalId) ||
-      byName.get(normalizeCollectionName(ownedItem?.name || ownedItem?.nameJa || ownedItem?.nameEn));
+    const idMatches = [
+      ownedItem?.itemId ? byItemId.get(String(ownedItem.itemId)) : null,
+      Number.isFinite(externalId) ? byExternalId.get(externalId) : null
+    ].filter(Boolean);
+    const uniqueIdMatches = Array.from(new Map(idMatches.map((item) => [item.id, item])).values());
+    if (uniqueIdMatches.length > 1) {
+      conflicts.push(ownedItem?.name || ownedItem?.nameJa || String(ownedItem?.id || ""));
+      continue;
+    }
+    const nameMatches = byName.get(normalizeCollectionName(ownedItem?.name || ownedItem?.nameJa || ownedItem?.nameEn)) || [];
+    const item = uniqueIdMatches[0] || (nameMatches.length === 1 ? nameMatches[0] : null);
 
     if (!item) {
+      if (nameMatches.length > 1) conflicts.push(ownedItem?.name || ownedItem?.nameJa || "同名項目");
+      else
       unmatched.push(ownedItem?.name || ownedItem?.nameJa || ownedItem?.itemId || String(ownedItem?.id || ""));
       continue;
     }
 
+    if (getProgress(item.id).owned) alreadyOwned += 1;
+    else newOwned += 1;
     const progress = getWritableProgress(item.id);
     progress.owned = true;
     progress.wanted = false;
@@ -1193,19 +1484,32 @@ function applyOwnedCollectionImport({ characterId, categoryKey, ownedItems, tota
       total: total ?? ownedItems.length,
       read: ownedItems.length,
       matched: matched.length,
+      expectedOwnedCount,
+      discoveredCount,
+      parsedCount,
+      alreadyOwnedCount: alreadyOwned,
+      newOwnedCount: newOwned,
+      conflictCount: conflicts.length,
+      failedCount,
+      completeness,
       unmatched: unmatched.slice(0, 50),
-      source
+      conflicts: conflicts.slice(0, 50),
+      source,
+      fetchedAt,
+      sourceUpdatedAt
     },
     lastCategory: categoryKey,
     lastImportedAt: importedAt
   };
 
-  saveStoredJson(storageKeys.progress, state.progress);
-
   return {
     characterId,
     read: ownedItems.length,
     matched: matched.length,
+    alreadyOwned,
+    newOwned,
+    conflicts: conflicts.length,
+    completeness,
     unmatched: unmatched.length,
     progress: state.progress
   };
@@ -1269,8 +1573,9 @@ function ffxivCollectIdForItem(item, categoryKey) {
 
 function normalizeCollectionName(value) {
   return String(value || "")
+    .normalize("NFKC")
     .toLowerCase()
-    .replace(/[\s\-‐‑‒–—―'’"“”.,:;!?()[\]{}（）【】「」『』・]/g, "")
+    .replace(/[\s\-‐‑‒–—―'’"“”.,:;!?()[\]{}（）【】「」『』・･]/g, "")
     .trim();
 }
 
@@ -1288,34 +1593,79 @@ function exportProgress() {
 async function importProgress(event) {
   const file = event.target.files?.[0];
   if (!file) return;
-  if (!confirm("現在の進捗を読み込み内容で上書きします。よろしいですか？")) {
-    event.target.value = "";
-    return;
-  }
 
   try {
     const text = await file.text();
     const imported = JSON.parse(text);
-    const progress = normalizeProgress(imported);
+    const progress = validateProgressPayload(imported);
+    const before = progressSummary(state.progress);
+    const after = progressSummary(progress);
+    const emptyWarning = after.entries === 0 ? "\n\n読み込み後は空の進捗になります。" : "";
+    const confirmed = confirm(
+      `進捗を上書きします。\n\n現在: ${before.entries}件（取得済み${before.owned}・欲しい${before.wanted}・メモ${before.notes}）\n読込後: ${after.entries}件（取得済み${after.owned}・欲しい${after.wanted}・メモ${after.notes}）${emptyWarning}\n\n直前の状態は「元に戻す」から復元できます。続けますか？`
+    );
+    if (!confirmed) return;
+
+    saveStoredJson(storageKeys.progressImportBackup, pruneProgress(state.progress));
     progress.updatedAt = new Date().toISOString();
 
     if (state.storageMode === "browser") {
       saveStoredJson(storageKeys.progress, progress);
-      state.progress = progress;
     } else {
       const result = await fetchJson("/api/progress/import", {
         method: "POST",
         body: JSON.stringify(progress)
       });
-      state.progress = normalizeProgress(result.progress);
+      Object.assign(progress, validateProgressPayload(result.progress));
     }
 
+    state.progress = progress;
+    state.progressRevision += 1;
+    state.savedProgressRevision = state.progressRevision;
+    state.saveError = null;
+    syncSaveStatus();
+    syncRestoreProgressAvailability();
     render();
     showToast("読み込みました");
   } catch (error) {
-    showToast(error.message, "error");
+    showToast(`読み込めませんでした: ${error.message}`, "error");
   } finally {
     event.target.value = "";
+  }
+}
+
+function syncRestoreProgressAvailability() {
+  elements.restoreProgressImport.hidden = !localStorage.getItem(storageKeys.progressImportBackup);
+}
+
+async function restoreProgressImport() {
+  try {
+    const backupText = localStorage.getItem(storageKeys.progressImportBackup);
+    if (!backupText) return;
+    const backup = validateProgressPayload(JSON.parse(backupText));
+    if (!confirm("直前の進捗取込前の状態へ戻しますか？")) return;
+
+    if (state.storageMode === "browser") {
+      saveStoredJson(storageKeys.progress, backup);
+    } else {
+      const result = await fetchJson("/api/progress/import", {
+        method: "POST",
+        body: JSON.stringify(backup)
+      });
+      Object.assign(backup, validateProgressPayload(result.progress));
+    }
+
+    state.progress = backup;
+    state.progressRevision += 1;
+    state.savedProgressRevision = state.progressRevision;
+    state.saveError = null;
+    localStorage.removeItem(storageKeys.progressImportBackup);
+    syncRestoreProgressAvailability();
+    syncSaveStatus();
+    render();
+    showToast("直前の進捗へ戻しました");
+  } catch (error) {
+    showToast(`復元できませんでした: ${error.message}`, "error");
   }
 }
 
@@ -1430,7 +1780,8 @@ async function lodestoneAllCategoriesExporter() {
     ["mount", /mount|マウント/],
     ["emote", /emote|エモート/],
     ["hairstyle", /hairstyle|髪型/],
-    ["fashion", /fashion.?accessor|ファッションアクセサリー|傘/]
+    ["fashion", /fashion.?accessor|ファッションアクセサリー|傘/],
+    ["beast", /bestiary|beastmaster|beast|魔獣図鑑|魔獣使い/]
   ];
   const detectCategory = (url, doc) => {
     const headings = cleanText(Array.from(doc.querySelectorAll("h1, h2, h3"))
@@ -1440,17 +1791,22 @@ async function lodestoneAllCategoriesExporter() {
     return categoryRules.find(([, pattern]) => pattern.test(signal))?.[0] || null;
   };
   const classify = (element) => {
-    const images = Array.from(element.querySelectorAll("img"));
-    const signal = cleanText([
-      element.className,
-      element.getAttribute("aria-label"),
-      element.getAttribute("title"),
-      ...images.flatMap((image) => [image.alt, image.title, image.className])
-    ].join(" ")).toLowerCase();
-    if (element.querySelector('input:checked, [aria-checked="true"]')) return "owned";
-    if (/未取得|未修得|未登録|unobtained|unlearned|unregistered|not acquired|locked|disabled/.test(signal)) return "missing";
-    if (/取得済|修得済|登録済|所持済|acquired|obtained|learned|registered|owned|complete/.test(signal)) return "owned";
-    return "unknown";
+    const descendants = Array.from(element.querySelectorAll("img, [aria-label], [data-status], [data-state]"));
+    const signal = cleanText([element, ...descendants].flatMap((node) => [
+      node.className,
+      node.getAttribute?.("aria-label"),
+      node.getAttribute?.("title"),
+      node.getAttribute?.("data-status"),
+      node.getAttribute?.("data-state"),
+      node.alt
+    ]).join(" ")).toLowerCase();
+    if (/未取得|未修得|未登録|未所持|unobtained|unlearned|unregistered|not acquired|not obtained|is-locked/.test(signal)) {
+      return { status: "missing", ownershipEvidence: "missing-marker" };
+    }
+    if (/取得済|修得済|登録済|所持済|acquired|obtained|learned|registered|owned/.test(signal)) {
+      return { status: "owned", ownershipEvidence: "owned-marker" };
+    }
+    return { status: "unknown", ownershipEvidence: "none" };
   };
   const extractCollection = (doc, url) => {
     const root = doc.querySelector("main, #character, .ldst__main") || doc.body;
@@ -1465,7 +1821,18 @@ async function lodestoneAllCategoriesExporter() {
       '[class*="spell-list"] > *',
       '[class*="item-list"] > *'
     ].join(",");
-    const nodes = Array.from(root.querySelectorAll(selectors))
+    const characterMatch = new URL(url).pathname.match(/\/lodestone\/character\/(\d+)\//);
+    const ownedOnlyCategory = ["mount", "minion"].includes(categoryHint);
+    const tooltipSelector = characterMatch && ownedOnlyCategory
+      ? `[data-tooltip_href*="/lodestone/character/${characterMatch[1]}/${categoryHint}/tooltip/"]`
+      : null;
+    const hasVerifiedOwnedOnlyList = Boolean(tooltipSelector && root.querySelector(tooltipSelector));
+    const itemElements = hasVerifiedOwnedOnlyList
+      ? Array.from(root.querySelectorAll(tooltipSelector)).map((tooltip) =>
+        tooltip.closest("tr, li, article") || tooltip.parentElement
+      ).filter(Boolean)
+      : Array.from(root.querySelectorAll(selectors));
+    const nodes = Array.from(new Set(itemElements))
       .filter((element) => !element.closest('[hidden], [aria-hidden="true"]'))
       .map((element) => ({ element, text: cleanText(element.textContent) }))
       .filter(({ text }) => text.length >= 2 && text.length <= 500)
@@ -1473,17 +1840,26 @@ async function lodestoneAllCategoriesExporter() {
     const seen = new Set();
     const entries = [];
     for (const { element, text } of nodes) {
-      const key = text.normalize("NFKC").toLowerCase();
+      const anchor = element.matches("a[href]") ? element : element.querySelector("a[href]");
+      const image = element.matches("img") ? element : element.querySelector("img");
+      const href = anchor?.getAttribute("href") ? new URL(anchor.getAttribute("href"), url).href : "";
+      const dataId = cleanText(element.getAttribute("data-id") || element.querySelector("[data-id]")?.getAttribute("data-id"));
+      const key = `${text.normalize("NFKC").toLowerCase()}|${href}|${dataId}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const detectedStatus = classify(element);
+      const classified = classify(element);
+      const ownsByVerifiedList = classified.status === "unknown" && hasVerifiedOwnedOnlyList &&
+        (element.matches(tooltipSelector) || element.querySelector(tooltipSelector));
       entries.push({
         text,
-        status: detectedStatus === "unknown" && ["mount", "minion"].includes(categoryHint)
-          ? "owned"
-          : detectedStatus,
+        status: ownsByVerifiedList ? "owned" : classified.status,
+        ownershipEvidence: ownsByVerifiedList ? "verified-owned-only-list" : classified.ownershipEvidence,
         className: cleanText(element.className).slice(0, 300),
-        ariaLabel: cleanText(element.getAttribute("aria-label")).slice(0, 300)
+        ariaLabel: cleanText(element.getAttribute("aria-label")).slice(0, 300),
+        title: cleanText(element.getAttribute("title") || anchor?.getAttribute("title")).slice(0, 300),
+        imageAlt: cleanText(image?.alt || image?.title).slice(0, 300),
+        href,
+        dataId
       });
       if (entries.length >= 3000) break;
     }
@@ -1494,6 +1870,7 @@ async function lodestoneAllCategoriesExporter() {
         .map((element) => element.textContent)
         .join(" ")),
       categoryHint,
+      layoutStatus: entries.length ? (hasVerifiedOwnedOnlyList ? "verified-owned-only-list" : "review-required") : "unsupported-layout",
       entries
     };
   };
@@ -1507,18 +1884,39 @@ async function lodestoneAllCategoriesExporter() {
   try {
     const currentUrl = new URL(location.href);
     currentUrl.hash = "";
-    const characterMatch = currentUrl.pathname.match(/^(.*\/lodestone\/character\/\d+\/)/);
+    const characterMatch = currentUrl.pathname.match(/^(.*\/lodestone\/character\/(\d+)\/)/);
     if (!characterMatch) {
       throw new Error("ログイン後、自分のキャラクターページで実行してください。");
     }
     const characterRoot = new URL(characterMatch[1], currentUrl.origin).href;
+    const characterId = characterMatch[2];
     const documents = new Map([[currentUrl.href, document]]);
     const failures = [];
+    const validateDocument = (doc, finalUrl, expectedUrl) => {
+      const actual = new URL(finalUrl);
+      const expected = new URL(expectedUrl);
+      if (actual.origin !== currentUrl.origin || !actual.pathname.startsWith(new URL(characterRoot).pathname)) {
+        throw new Error("別のページへ移動しました。ログイン状態を確認してください。");
+      }
+      const pageText = cleanText(doc.body?.textContent).toLowerCase();
+      if (/ログイン|login/.test(pageText) && doc.querySelector('input[type="password"], form[action*="login"]')) {
+        throw new Error("Lodestoneのログインが切れています。");
+      }
+      const canonical = doc.querySelector('link[rel="canonical"]')?.href;
+      const canonicalCharacter = canonical && new URL(canonical, actual).pathname.match(/\/lodestone\/character\/(\d+)\//)?.[1];
+      if (canonicalCharacter && canonicalCharacter !== characterId) {
+        throw new Error("別キャラクターのページを検出しました。");
+      }
+      if (expected.pathname.includes(`/character/${characterId}/`) && !actual.pathname.includes(`/character/${characterId}/`)) {
+        throw new Error("キャラクターIDを確認できませんでした。");
+      }
+    };
     const fetchDocument = async (url) => {
       if (documents.has(url)) return documents.get(url);
       const response = await fetch(url, { credentials: "include" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const doc = new DOMParser().parseFromString(await response.text(), "text/html");
+      validateDocument(doc, response.url, url);
       documents.set(url, doc);
       return doc;
     };
@@ -1570,9 +1968,10 @@ async function lodestoneAllCategoriesExporter() {
     }
 
     const payload = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       source: "ff14-collection-notebook-lodestone-bookmarklet",
       capturedAt: new Date().toISOString(),
+      characterId,
       characterUrl: characterRoot,
       collections,
       failures
@@ -1654,11 +2053,12 @@ async function importLodestoneSnapshotFile(event) {
       throw new Error("JSONファイルが大きすぎます");
     }
     const snapshot = JSON.parse(await file.text());
-    const hasCollections = snapshot?.schemaVersion === 2 && Array.isArray(snapshot.collections);
+    const hasCollections = snapshot?.schemaVersion >= 2 && Array.isArray(snapshot.collections);
     if (snapshot?.source !== "ff14-collection-notebook-lodestone-bookmarklet" || (!Array.isArray(snapshot.entries) && !hasCollections)) {
       throw new Error("Lodestone取込ツールで書き出したJSONではありません");
     }
-    state.lodestoneSnapshot = snapshot;
+    elements.lodestoneSnapshotStatus.textContent = "キャラクターIDから取得状況を照合しています...";
+    state.lodestoneSnapshot = await enrichLodestoneSnapshot(snapshot);
     analyzeLodestoneSnapshot();
   } catch (error) {
     state.lodestoneSnapshot = null;
@@ -1668,6 +2068,86 @@ async function importLodestoneSnapshotFile(event) {
     elements.lodestoneSnapshotStatus.textContent = error.message;
     showToast(error.message, "error");
   }
+}
+
+async function enrichLodestoneSnapshot(snapshot) {
+  if (!Array.isArray(snapshot.collections)) return snapshot;
+  const characterId = parseCharacterId(snapshot.characterId || snapshot.characterUrl);
+  if (!characterId) return snapshot;
+
+  const originalCollections = snapshot.collections.map((collection) => ({
+    ...collection,
+    evidenceSource: collection.evidenceSource || "lodestone-bookmarklet",
+    capturedAt: collection.capturedAt || snapshot.capturedAt || null
+  }));
+  const directImports = [];
+  const directFailures = [];
+  const directCollections = await Promise.all(Object.entries(lodestoneCategories).map(async ([category, endpointCategory]) => {
+    try {
+      const result = await fetchOwnedCollectionByCharacter(characterId, endpointCategory, category, true);
+      directImports.push({
+        categoryHint: category,
+        read: result.ownedItems.length,
+        source: result.source,
+        expectedOwnedCount: result.expectedOwnedCount ?? null,
+        discoveredCount: result.discoveredCount ?? result.ownedItems.length,
+        parsedCount: result.parsedCount ?? result.ownedItems.length,
+        failedCount: result.failedCount ?? 0,
+        completeness: result.completeness || "unknown",
+        fetchedAt: result.fetchedAt,
+        sourceUpdatedAt: result.sourceUpdatedAt ?? null
+      });
+      return {
+        url: `https://ffxivcollect.com/api/characters/${encodeURIComponent(characterId)}/${endpointCategory}/owned`,
+        title: `${categoryLabel(category)} - ${result.characterName || characterId}`,
+        headings: categoryLabel(category),
+        categoryHint: category,
+        matchMethod: "character-id",
+        evidenceSource: result.source === "FFXIV Collect API" ? "ffxiv-collect-api" : "lodestone-proxy",
+        fetchedAt: result.fetchedAt || new Date().toISOString(),
+        sourceUpdatedAt: result.sourceUpdatedAt ?? null,
+        expectedOwnedCount: result.expectedOwnedCount ?? null,
+        discoveredCount: result.discoveredCount ?? result.ownedItems.length,
+        parsedCount: result.parsedCount ?? result.ownedItems.length,
+        failedCount: result.failedCount ?? 0,
+        completeness: result.completeness || "unknown",
+        entries: result.ownedItems.map((item) => ({
+          text: item?.name || item?.nameJa || item?.nameEn || "",
+          status: "owned",
+          ownershipEvidence: result.source === "FFXIV Collect API" ? "ffxiv-collect-api" : "lodestone-proxy-owned-list",
+          externalId: item?.id ?? null,
+          itemId: item?.itemId ?? item?.item_id ?? null
+        }))
+      };
+    } catch (error) {
+      directFailures.push({ categoryHint: category, error: error.message });
+      return null;
+    }
+  }));
+
+  const apiCollections = directCollections.filter(Boolean);
+  const collections = originalCollections.concat(apiCollections);
+  const comparisons = apiCollections.map((apiCollection) => {
+    const originals = originalCollections.filter((collection) => detectLodestoneSnapshotCategory(collection) === apiCollection.categoryHint);
+    const originalOwnedCount = originals.reduce((total, collection) => total + collection.entries.filter((entry) => entry?.status === "owned").length, 0);
+    return {
+      categoryHint: apiCollection.categoryHint,
+      originalOwnedCount,
+      apiOwnedCount: apiCollection.entries.length,
+      difference: apiCollection.entries.length - originalOwnedCount,
+      apiEmptyWithOriginalEvidence: apiCollection.entries.length === 0 && originalOwnedCount > 0
+    };
+  });
+
+  return {
+    ...snapshot,
+    characterId,
+    collections,
+    originalCollections,
+    directImports,
+    directFailures,
+    comparisons
+  };
 }
 
 function analyzeLodestoneSnapshot() {
@@ -1697,12 +2177,26 @@ function analyzeLodestoneSnapshot() {
   }
 
   const candidateMap = new Map();
+  const analysisMetrics = { alreadyOwnedCount: 0, unmatchedCount: 0, conflictCount: 0, partialMatchCount: 0 };
   for (const { collection, category } of recognized) {
-    for (const candidate of findLodestoneSnapshotCandidates(collection, category)) {
+    const candidates = findLodestoneSnapshotCandidates(collection, category);
+    for (const key of Object.keys(analysisMetrics)) {
+      analysisMetrics[key] += candidates.metrics?.[key] || 0;
+    }
+    for (const candidate of candidates) {
       const existing = candidateMap.get(candidate.item.id);
-      if (!existing || (existing.status !== "owned" && candidate.status === "owned")) {
+      if (!existing) {
         candidateMap.set(candidate.item.id, { ...candidate, category });
+        continue;
       }
+      const statuses = new Set([existing.status, candidate.status]);
+      const conflict = statuses.has("conflict") || (statuses.has("owned") && statuses.has("missing"));
+      candidateMap.set(candidate.item.id, {
+        ...existing,
+        status: conflict ? "conflict" : statuses.has("owned") ? "owned" : statuses.has("unknown") ? "unknown" : "missing",
+        autoSelected: !conflict && (existing.autoSelected || candidate.autoSelected),
+        evidence: [...(existing.evidence || []), ...(candidate.evidence || [])]
+      });
     }
   }
   state.lodestoneSnapshotCandidates = Array.from(candidateMap.values()).sort((a, b) => {
@@ -1711,13 +2205,27 @@ function analyzeLodestoneSnapshot() {
     return compareText(displayName(a.item), displayName(b.item));
   });
   renderLodestoneSnapshotCandidates();
-  const knownOwned = state.lodestoneSnapshotCandidates.filter((candidate) => candidate.status === "owned").length;
+  const knownOwned = state.lodestoneSnapshotCandidates.filter((candidate) => candidate.autoSelected).length;
+  const conflicts = state.lodestoneSnapshotCandidates.filter((candidate) => candidate.status === "conflict").length + analysisMetrics.conflictCount;
   const categories = Array.from(new Set(recognized.map(({ category }) => category)));
   const failed = Array.isArray(snapshot.failures) ? snapshot.failures.length : 0;
+  const directMatched = Array.isArray(snapshot.directImports)
+    ? snapshot.directImports.reduce((total, result) => total + result.read, 0)
+    : 0;
+  const directFailed = Array.isArray(snapshot.directFailures) ? snapshot.directFailures.length : 0;
   const skipped = analyzed.length - recognized.length;
+  const partialImports = Array.isArray(snapshot.directImports)
+    ? snapshot.directImports.filter((result) => result.completeness === "partial").length
+    : 0;
+  const apiDifferences = Array.isArray(snapshot.comparisons)
+    ? snapshot.comparisons.filter((result) => result.difference !== 0).length
+    : 0;
+  const directSummary = directMatched || directFailed || partialImports || apiDifferences
+    ? `、API/ID証拠 ${directMatched}件${directFailed ? `（${directFailed}カテゴリ失敗）` : ""}${partialImports ? `、不完全 ${partialImports}カテゴリ` : ""}${apiDifferences ? `、元データとの差 ${apiDifferences}カテゴリ` : ""}`
+    : "";
   elements.lodestoneSnapshotStatus.textContent = state.lodestoneSnapshotCandidates.length
-    ? `${categories.map(categoryLabel).join("・")}を解析しました。取得済み判定 ${knownOwned}件、要確認 ${state.lodestoneSnapshotCandidates.length - knownOwned}件${failed || skipped ? `、未取込 ${failed + skipped}カテゴリ` : ""}です。`
-    : `${categories.map(categoryLabel).join("・")}に一致する未登録項目を検出できませんでした。`;
+    ? `${categories.map(categoryLabel).join("・")}を解析しました。自動選択 ${knownOwned}件、要確認 ${state.lodestoneSnapshotCandidates.length - knownOwned}件${conflicts ? `、競合 ${conflicts}件` : ""}${analysisMetrics.alreadyOwnedCount ? `、登録済み ${analysisMetrics.alreadyOwnedCount}件` : ""}${directSummary}${failed || skipped ? `、未取込 ${failed + skipped}カテゴリ` : ""}です。`
+    : `${categories.map(categoryLabel).join("・")}に追加候補はありません${analysisMetrics.alreadyOwnedCount ? `（登録済み ${analysisMetrics.alreadyOwnedCount}件）` : ""}${conflicts ? `。競合 ${conflicts}件を確認してください` : ""}。${directSummary}`;
 }
 
 function detectLodestoneSnapshotCategory(snapshot) {
@@ -1732,7 +2240,8 @@ function detectLodestoneSnapshotCategory(snapshot) {
     ["mount", ["mount", "マウント"]],
     ["emote", ["emote", "エモート"]],
     ["hairstyle", ["hairstyle", "髪型"]],
-    ["fashion", ["fashionaccessor", "ファッションアクセサリー"]]
+    ["fashion", ["fashionaccessor", "ファッションアクセサリー"]],
+    ["beast", ["bestiary", "beastmaster", "beast", "魔獣図鑑", "魔獣使い"]]
   ];
   const direct = rules.find(([, terms]) => terms.some((term) => signal.includes(normalizeOcrText(term))));
   if (direct) return direct[0];
@@ -1752,48 +2261,115 @@ function detectLodestoneSnapshotCategory(snapshot) {
 
 function findLodestoneSnapshotCandidates(snapshot, category) {
   const entries = snapshot.entries.map((entry) => ({
-    text: normalizeOcrText(entry?.text),
-    status: ["owned", "missing"].includes(entry?.status) ? entry.status : "unknown"
-  })).filter((entry) => entry.text.length >= 2);
+    names: [entry?.name, entry?.text, entry?.title, entry?.imageAlt, entry?.ariaLabel]
+      .map(normalizeOcrText)
+      .filter((value) => value.length >= 2),
+    status: ["owned", "missing"].includes(entry?.status) ? entry.status : "unknown",
+    ownershipEvidence: String(entry?.ownershipEvidence || "none"),
+    source: snapshot.evidenceSource || snapshot.source || "unknown",
+    observedAt: snapshot.fetchedAt || snapshot.capturedAt || null,
+    externalId: Number(entry?.externalId),
+    itemId: String(entry?.itemId || ""),
+    dataId: String(entry?.dataId || "")
+  })).filter((entry) => entry.names.length || Number.isFinite(entry.externalId) || entry.itemId || entry.dataId);
 
   const catalogItems = (state.catalog?.items || [])
-    .filter((item) => item.category === category && !getProgress(item.id).owned)
+    .filter((item) => item.category === category)
     .map((item) => ({
       item,
       aliases: Array.from(new Set([item.nameJa, item.nameEn, displayName(item)]
         .map(normalizeOcrText)
         .filter((name) => name.length >= 2)))
     }));
-  const matchesById = new Map();
-
-  for (const entry of entries) {
-    const matches = catalogItems
-      .map(({ item, aliases }) => ({
-        item,
-        alias: aliases
-          .filter((alias) => entry.text.includes(alias))
-          .sort((a, b) => b.length - a.length)[0]
-      }))
-      .filter(({ alias }) => alias);
-    const specificMatches = matches.filter(({ alias, item }) => !matches.some((other) =>
-      other.item.id !== item.id &&
-      other.alias.length > alias.length &&
-      other.alias.includes(alias)
-    ));
-    for (const { item } of specificMatches) {
-      const itemEntries = matchesById.get(item.id) || [];
-      itemEntries.push(entry);
-      matchesById.set(item.id, itemEntries);
+  const byInternalId = new Map(catalogItems.map(({ item }) => [item.id, item]));
+  const byExternalId = new Map();
+  const byGameItemId = new Map();
+  const byName = new Map();
+  for (const { item, aliases } of catalogItems) {
+    const externalId = ffxivCollectIdForItem(item, category);
+    if (externalId) byExternalId.set(String(externalId), item);
+    const gameItemId = String(item?.externalIds?.item || "");
+    if (gameItemId) byGameItemId.set(gameItemId, item);
+    for (const alias of aliases) {
+      const values = byName.get(alias) || [];
+      if (!values.some((value) => value.id === item.id)) values.push(item);
+      byName.set(alias, values);
     }
   }
 
-  return catalogItems
+  const matchesById = new Map();
+  const metrics = { alreadyOwnedCount: 0, unmatchedCount: 0, conflictCount: 0, partialMatchCount: 0 };
+  const addMatch = (item, entry, matchKind) => {
+    const values = matchesById.get(item.id) || [];
+    values.push({ ...entry, matchKind });
+    matchesById.set(item.id, values);
+  };
+
+  for (const entry of entries) {
+    const idMatches = [];
+    if (Number.isFinite(entry.externalId) && entry.externalId > 0) idMatches.push(byExternalId.get(String(entry.externalId)));
+    if (entry.itemId) idMatches.push(byInternalId.get(entry.itemId), byGameItemId.get(entry.itemId));
+    if (entry.dataId) {
+      idMatches.push(byInternalId.get(entry.dataId));
+      const namespaced = entry.dataId.match(new RegExp(`^${category}-(\\d+)$`));
+      if (namespaced) idMatches.push(byExternalId.get(namespaced[1]));
+    }
+    const resolvedIds = Array.from(new Map(idMatches.filter(Boolean).map((item) => [item.id, item])).values());
+    if (resolvedIds.length > 1) {
+      metrics.conflictCount += 1;
+      continue;
+    }
+    if (resolvedIds.length === 1) {
+      addMatch(resolvedIds[0], entry, "id");
+      continue;
+    }
+
+    const exactMatches = Array.from(new Map(entry.names
+      .flatMap((name) => byName.get(name) || [])
+      .map((item) => [item.id, item])).values());
+    if (exactMatches.length === 1) {
+      addMatch(exactMatches[0], entry, "exact-name");
+      continue;
+    }
+    if (exactMatches.length > 1) {
+      metrics.conflictCount += 1;
+      continue;
+    }
+
+    const partialMatches = catalogItems.map(({ item, aliases }) => ({
+      item,
+      alias: aliases.filter((alias) => entry.names.some((name) => name.includes(alias) || alias.includes(name)))
+        .sort((a, b) => b.length - a.length)[0]
+    })).filter(({ alias }) => alias).sort((a, b) => b.alias.length - a.alias.length).slice(0, 5);
+    if (!partialMatches.length) metrics.unmatchedCount += 1;
+    for (const { item } of partialMatches) {
+      metrics.partialMatchCount += 1;
+      addMatch(item, { ...entry, status: "unknown" }, "partial-name");
+    }
+  }
+
+  const trustedOwnership = new Set(["owned-marker", "verified-owned-only-list", "ffxiv-collect-api", "lodestone-proxy-owned-list"]);
+  const candidates = catalogItems
     .map(({ item }) => {
       const matches = matchesById.get(item.id) || [];
       if (!matches.length || matches.every((entry) => entry.status === "missing")) return null;
+      if (getProgress(item.id).owned) {
+        metrics.alreadyOwnedCount += 1;
+        return null;
+      }
+      const statuses = new Set(matches.map((entry) => entry.status));
+      const status = statuses.has("owned") && statuses.has("missing")
+        ? "conflict"
+        : statuses.has("owned") ? "owned" : "unknown";
+      const strongIdentity = matches.every((entry) => entry.matchKind === "id" || entry.matchKind === "exact-name");
       return {
         item,
-        status: matches.some((entry) => entry.status === "owned") ? "owned" : "unknown"
+        status,
+        matchKind: matches.some((entry) => entry.matchKind === "partial-name") ? "partial-name" : matches[0].matchKind,
+        autoSelected: status === "owned" && strongIdentity && matches.some((entry) => trustedOwnership.has(entry.ownershipEvidence)),
+        evidence: matches.map(({ source, observedAt, ownershipEvidence, matchKind, status: evidenceStatus }) => ({
+          source, observedAt, ownershipEvidence, matchKind, status: evidenceStatus
+        }))
       };
     })
     .filter(Boolean)
@@ -1801,20 +2377,22 @@ function findLodestoneSnapshotCandidates(snapshot, category) {
       if (a.status !== b.status) return a.status === "owned" ? -1 : 1;
       return compareText(displayName(a.item), displayName(b.item));
     });
+  Object.defineProperty(candidates, "metrics", { value: metrics, enumerable: false });
+  return candidates;
 }
 
 function renderLodestoneSnapshotCandidates() {
   const candidates = state.lodestoneSnapshotCandidates;
   elements.lodestoneSnapshotCandidates.hidden = false;
   elements.applyLodestoneSnapshot.hidden = candidates.length === 0;
-  elements.lodestoneSnapshotCandidateList.innerHTML = candidates.map(({ item, status, category }) => `
+  elements.lodestoneSnapshotCandidateList.innerHTML = candidates.map(({ item, status, category, autoSelected, matchKind, evidence }) => `
     <label class="candidate-row">
-      <input type="checkbox" value="${escapeAttr(item.id)}"${status === "owned" ? " checked" : ""}>
+      <input type="checkbox" value="${escapeAttr(item.id)}"${autoSelected ? " checked" : ""}>
       <span class="candidate-image${item.icon || item.image ? "" : " image-missing"}">
         ${item.icon || item.image ? `<img src="${escapeAttr(item.icon || item.image)}" alt="" loading="lazy">` : ""}
       </span>
       <span class="candidate-name">${escapeHtml(displayName(item))}</span>
-      <span class="candidate-score">${escapeHtml(categoryLabel(category))} · ${status === "owned" ? "取得済み判定" : "要確認"}</span>
+      <span class="candidate-score">${escapeHtml(categoryLabel(category))} · ${status === "conflict" ? "競合" : autoSelected ? "根拠確認済み" : "要確認"} · ${matchKind === "id" ? "ID一致" : matchKind === "exact-name" ? "名前完全一致" : "部分一致"}${evidence?.[0]?.source ? ` · ${escapeHtml(evidence[0].source)}` : ""}</span>
     </label>
   `).join("");
   syncLodestoneSnapshotSummary();
@@ -1839,6 +2417,8 @@ async function applyLodestoneSnapshot() {
     .map((input) => input.value);
   if (!selectedIds.length) return;
 
+  saveStoredJson(storageKeys.progressImportBackup, pruneProgress(state.progress));
+  syncRestoreProgressAvailability();
   const importedAt = new Date().toISOString();
   const selectedSet = new Set(selectedIds);
   const selectedCandidates = state.lodestoneSnapshotCandidates.filter(({ item }) => selectedSet.has(item.id));
@@ -2049,7 +2629,7 @@ function normalizeOcrText(value) {
   return String(value || "")
     .normalize("NFKC")
     .toLowerCase()
-    .replace(/[\s\-‐‑‒–—―'’"“”.,:;!?()[\]{}（）【】「」『』・]/g, "")
+    .replace(/[\s\-‐‑‒–—―'’"“”.,:;!?()[\]{}（）【】「」『』・･]/g, "")
     .trim();
 }
 

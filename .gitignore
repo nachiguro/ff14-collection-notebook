@@ -1,0 +1,12 @@
+node_modules/
+.ff14cn-server.json
+data/backups/
+data/user-progress.json
+public/data/lodestone-snapshots/
+docs/data/lodestone-snapshots/
+runtime/*.exe
+web-publish/
+server.log
+server.err.log
+.wrangler/
+workers/lodestone-proxy/.wrangler/
