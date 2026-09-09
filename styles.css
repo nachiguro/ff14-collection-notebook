@@ -849,6 +849,292 @@ select:focus {
   border-color: rgba(120, 185, 213, 0.62);
 }
 
+.import-dialog {
+  width: min(720px, calc(100vw - 32px));
+  max-height: min(780px, calc(100vh - 32px));
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--mist);
+  background: var(--panel-solid);
+  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.58);
+}
+
+.lodestone-tool-dialog {
+  width: min(820px, calc(100vw - 32px));
+}
+
+.import-dialog::backdrop {
+  background: rgba(6, 8, 13, 0.78);
+  backdrop-filter: blur(3px);
+}
+
+.import-dialog-shell {
+  max-height: min(780px, calc(100vh - 32px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.import-dialog-header,
+.import-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.import-dialog-header h3 {
+  margin: 2px 0 0;
+  color: #fff4d2;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 22px;
+}
+
+.dialog-close {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+  background: transparent;
+}
+
+.dialog-close:hover {
+  color: var(--mist);
+  border-color: var(--line-strong);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.import-dialog-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px;
+  display: grid;
+  gap: 14px;
+}
+
+.lodestone-workflow {
+  gap: 0;
+}
+
+.workflow-step {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 12px;
+  padding: 16px 0;
+  border-bottom: 1px solid rgba(214, 184, 114, 0.18);
+}
+
+.workflow-step:first-child {
+  padding-top: 0;
+}
+
+.workflow-number {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  color: #10131b;
+  font-weight: 700;
+  background: var(--gold-bright);
+}
+
+.workflow-step h4 {
+  margin: 4px 0 7px;
+  color: #f3e6c3;
+  font-size: 16px;
+}
+
+.workflow-step p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.workflow-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.bookmarklet-link {
+  display: inline-grid;
+  place-items: center;
+  color: #10131b;
+  text-decoration: none;
+  background: linear-gradient(180deg, #f0d27f, #bc8a3f);
+}
+
+.bookmarklet-link:hover {
+  color: #10131b;
+  background: linear-gradient(180deg, #ffe59c, #d39e4c);
+}
+
+.workflow-import {
+  min-width: 0;
+}
+
+.snapshot-input-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.snapshot-input-row select,
+.snapshot-input-row .file-label {
+  width: 100%;
+}
+
+.workflow-import .import-status {
+  min-height: 18px;
+  margin-top: 10px;
+}
+
+.screenshot-dropzone {
+  min-height: 116px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  display: grid;
+  place-content: center;
+  gap: 5px;
+  padding: 18px;
+  text-align: center;
+  cursor: pointer;
+  background: rgba(14, 17, 25, 0.54);
+}
+
+.screenshot-dropzone:hover {
+  border-color: var(--gold-bright);
+  background: rgba(215, 177, 95, 0.07);
+}
+
+.screenshot-dropzone span,
+.import-status,
+.candidate-score {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.screenshot-dropzone input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
+.import-safety-check {
+  min-height: 44px;
+  border: 1px solid rgba(132, 198, 154, 0.32);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(63, 105, 76, 0.14);
+}
+
+.import-safety-check input,
+.candidate-row input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  accent-color: var(--green);
+}
+
+.import-progress {
+  width: 100%;
+  height: 8px;
+  accent-color: var(--gold);
+}
+
+.screenshot-candidates {
+  min-height: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.candidate-toolbar {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.candidate-toolbar > div {
+  display: flex;
+  gap: 10px;
+}
+
+.text-button {
+  border: 0;
+  padding: 4px 0;
+  color: #c8ecfa;
+  background: transparent;
+}
+
+.text-button:hover {
+  color: #fff;
+}
+
+.candidate-list {
+  display: grid;
+  gap: 7px;
+}
+
+.candidate-row {
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: auto 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgba(214, 184, 114, 0.18);
+  border-radius: var(--radius);
+  padding: 7px 10px;
+  background: rgba(14, 17, 25, 0.54);
+}
+
+.candidate-row:hover {
+  border-color: var(--line);
+}
+
+.candidate-image {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.candidate-image img {
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+}
+
+.candidate-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.import-dialog-footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
+  border-bottom: 0;
+}
+
 .toast {
   position: fixed;
   left: 50%;
@@ -999,6 +1285,47 @@ select:focus {
   .action-row {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .import-dialog-header,
+  .import-dialog-body,
+  .import-dialog-footer {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .import-dialog-footer {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .candidate-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .workflow-step {
+    grid-template-columns: 28px minmax(0, 1fr);
+    gap: 9px;
+  }
+
+  .workflow-number {
+    width: 28px;
+    height: 28px;
+  }
+
+  .workflow-actions,
+  .snapshot-input-row {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .candidate-row {
+    grid-template-columns: auto 38px minmax(0, 1fr);
+  }
+
+  .candidate-score {
+    grid-column: 3;
   }
 
   .minion-grid {

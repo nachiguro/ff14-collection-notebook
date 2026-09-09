@@ -68,6 +68,8 @@
             <h2 id="categoryTitle">ミニオン</h2>
           </div>
           <div class="action-row">
+            <button id="openLodestoneTool" class="button ghost" type="button">Lodestone取込ツール</button>
+            <button id="openScreenshotImport" class="button ghost" type="button">画像取込</button>
             <button id="refreshCatalog" class="button ghost" type="button">カタログ更新</button>
             <button id="exportProgress" class="button ghost" type="button">書き出し</button>
             <label class="button ghost file-label">
@@ -157,6 +159,127 @@
         </div>
       </main>
     </div>
+
+    <dialog id="screenshotImportDialog" class="import-dialog" aria-labelledby="screenshotImportTitle">
+      <div class="import-dialog-shell">
+        <header class="import-dialog-header">
+          <div>
+            <span class="kicker">Screenshot OCR</span>
+            <h3 id="screenshotImportTitle">スクリーンショット取り込み</h3>
+          </div>
+          <button id="closeScreenshotImport" class="dialog-close" type="button" aria-label="閉じる" title="閉じる">×</button>
+        </header>
+
+        <div class="import-dialog-body">
+          <label class="screenshot-dropzone" for="screenshotFiles">
+            <strong id="screenshotFileLabel">画像を選択</strong>
+            <span>PNG / JPEG / WebP、複数選択可</span>
+            <input id="screenshotFiles" type="file" accept="image/png,image/jpeg,image/webp" multiple>
+          </label>
+
+          <label class="import-safety-check">
+            <input id="screenshotOwnedOnly" type="checkbox">
+            <span>取得済み項目だけが表示された画像です</span>
+          </label>
+
+          <div id="screenshotImportStatus" class="import-status" role="status" aria-live="polite"></div>
+          <progress id="screenshotImportProgress" class="import-progress" max="100" value="0" hidden></progress>
+
+          <div id="screenshotCandidates" class="screenshot-candidates" hidden>
+            <div class="candidate-toolbar">
+              <strong id="screenshotCandidateSummary">候補 0件</strong>
+              <div>
+                <button id="selectAllScreenshotCandidates" class="text-button" type="button">すべて選択</button>
+                <button id="clearScreenshotCandidates" class="text-button" type="button">選択解除</button>
+              </div>
+            </div>
+            <div id="screenshotCandidateList" class="candidate-list"></div>
+          </div>
+        </div>
+
+        <footer class="import-dialog-footer">
+          <button id="cancelScreenshotImport" class="button ghost" type="button">キャンセル</button>
+          <button id="analyzeScreenshots" class="button" type="button">画像を解析</button>
+          <button id="applyScreenshotImport" class="button" type="button" hidden>取得済みに反映</button>
+        </footer>
+      </div>
+    </dialog>
+
+    <dialog id="lodestoneToolDialog" class="import-dialog lodestone-tool-dialog" aria-labelledby="lodestoneToolTitle">
+      <div class="import-dialog-shell">
+        <header class="import-dialog-header">
+          <div>
+            <span class="kicker">Lodestone Export</span>
+            <h3 id="lodestoneToolTitle">Lodestone取得状況の取り込み</h3>
+          </div>
+          <button id="closeLodestoneTool" class="dialog-close" type="button" aria-label="閉じる" title="閉じる">×</button>
+        </header>
+
+        <div class="import-dialog-body lodestone-workflow">
+          <section class="workflow-step">
+            <span class="workflow-number">1</span>
+            <div>
+              <h4>JavaScriptをブックマークに登録</h4>
+              <p>下のリンクをブックマークバーへドラッグします。ドラッグできない場合は、コードをコピーして新しいブックマークのURL欄へ貼り付けます。</p>
+              <div class="workflow-actions">
+                <a id="lodestoneBookmarkletLink" class="button bookmarklet-link" href="#">全カテゴリを書き出す</a>
+                <button id="copyLodestoneBookmarklet" class="button ghost" type="button">コードをコピー</button>
+                <button id="downloadLodestoneBookmarklet" class="button ghost" type="button">JavaScriptを保存</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="workflow-step">
+            <span class="workflow-number">2</span>
+            <div>
+              <h4>Lodestoneで全カテゴリJSONを書き出す</h4>
+              <p>Lodestoneへログインし、自分のキャラクターページで「全カテゴリを書き出す」を1回実行します。見つかった対応カテゴリを自動で巡回し、1つのJSONにまとめます。</p>
+            </div>
+          </section>
+
+          <section class="workflow-step">
+            <span class="workflow-number">3</span>
+            <div class="workflow-import">
+              <h4>統合JSONを1回読み込む</h4>
+              <div class="snapshot-input-row">
+                <select id="lodestoneSnapshotCategory" aria-label="取り込みカテゴリ">
+                  <option value="auto">カテゴリ: 自動判定</option>
+                  <option value="mount">マウント</option>
+                  <option value="minion">ミニオン</option>
+                  <option value="orchestrion">オーケストリオン譜</option>
+                  <option value="card">トリプルトライアドカード</option>
+                  <option value="emote">エモート</option>
+                  <option value="spell">青魔法</option>
+                  <option value="hairstyle">髪型</option>
+                  <option value="fashion">傘/ファッションアクセサリー</option>
+                </select>
+                <label class="button file-label">
+                  JSONを選択
+                  <input id="lodestoneSnapshotFile" type="file" accept="application/json,.json">
+                </label>
+              </div>
+              <div id="lodestoneSnapshotStatus" class="import-status" role="status" aria-live="polite"></div>
+            </div>
+          </section>
+
+          <div id="lodestoneSnapshotCandidates" class="screenshot-candidates" hidden>
+            <div class="candidate-toolbar">
+              <strong id="lodestoneSnapshotSummary">候補 0件</strong>
+              <div>
+                <button id="selectAllLodestoneCandidates" class="text-button" type="button">すべて選択</button>
+                <button id="clearLodestoneCandidates" class="text-button" type="button">選択解除</button>
+              </div>
+            </div>
+            <div id="lodestoneSnapshotCandidateList" class="candidate-list"></div>
+          </div>
+        </div>
+
+        <footer class="import-dialog-footer">
+          <button id="cancelLodestoneTool" class="button ghost" type="button">キャンセル</button>
+          <button id="applyLodestoneSnapshot" class="button" type="button" hidden>取得済みに反映</button>
+        </footer>
+      </div>
+    </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script src="app.js"></script>
