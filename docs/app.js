@@ -27,6 +27,7 @@ const state = {
   screenshotCandidates: [],
   screenshotOcrFileIndex: 0,
   screenshotOcrFileCount: 1,
+  dataResetRunning: false,
   lodestoneSnapshot: null,
   lodestoneSnapshotCategory: null,
   lodestoneSnapshotCandidates: []
@@ -39,6 +40,12 @@ const elements = {
   exportProgress: document.querySelector("#exportProgress"),
   importProgress: document.querySelector("#importProgress"),
   restoreProgressImport: document.querySelector("#restoreProgressImport"),
+  openDataReset: document.querySelector("#openDataReset"),
+  dataResetDialog: document.querySelector("#dataResetDialog"),
+  closeDataReset: document.querySelector("#closeDataReset"),
+  cancelDataReset: document.querySelector("#cancelDataReset"),
+  dataResetCategories: document.querySelectorAll('input[name="resetCategory"]'),
+  resetSelectedCategories: document.querySelector("#resetSelectedCategories"),
   saveStatus: document.querySelector("#saveStatus"),
   openLodestoneTool: document.querySelector("#openLodestoneTool"),
   lodestoneToolDialog: document.querySelector("#lodestoneToolDialog"),
@@ -280,6 +287,15 @@ function bindEvents() {
   elements.exportProgress.addEventListener("click", exportProgress);
   elements.importProgress.addEventListener("change", importProgress);
   elements.restoreProgressImport.addEventListener("click", restoreProgressImport);
+  elements.openDataReset.addEventListener("click", openDataResetDialog);
+  elements.closeDataReset.addEventListener("click", closeDataResetDialog);
+  elements.cancelDataReset.addEventListener("click", closeDataResetDialog);
+  elements.dataResetDialog.addEventListener("change", syncDataResetControls);
+  elements.dataResetDialog.addEventListener("close", resetDataResetDialog);
+  elements.dataResetDialog.addEventListener("cancel", (event) => {
+    if (state.dataResetRunning) event.preventDefault();
+  });
+  elements.resetSelectedCategories.addEventListener("click", resetSelectedCategories);
   elements.openLodestoneTool.addEventListener("click", openLodestoneTool);
   elements.closeLodestoneTool.addEventListener("click", closeLodestoneTool);
   elements.cancelLodestoneTool.addEventListener("click", closeLodestoneTool);
@@ -589,6 +605,91 @@ function isDefaultProgressItem(progress) {
     !progress.wanted &&
     (!progress.priority || progress.priority === "none") &&
     !progress.notes;
+}
+
+function resetProgressCategories(progress, categories, catalogItems = []) {
+  const selectedCategories = new Set(categories.filter((category) => categoryLabels[category]));
+  const nextProgress = normalizeProgress(cloneJson(progress));
+  const categoryByItemId = new Map(catalogItems.map((item) => [item.id, item.category]));
+  let removedItems = 0;
+
+  for (const itemId of Object.keys(nextProgress.items)) {
+    const category = categoryByItemId.get(itemId) ||
+      Array.from(selectedCategories).find((value) => itemId.startsWith(`${value}-`));
+    if (!selectedCategories.has(category)) continue;
+    delete nextProgress.items[itemId];
+    removedItems += 1;
+  }
+
+  if (nextProgress.lodestone) {
+    const lodestone = { ...nextProgress.lodestone };
+    selectedCategories.forEach((category) => delete lodestone[category]);
+    if (Object.keys(lodestone).length) nextProgress.lodestone = lodestone;
+    else delete nextProgress.lodestone;
+  }
+
+  if (nextProgress.screenshot && selectedCategories.has(nextProgress.screenshot.category)) {
+    delete nextProgress.screenshot;
+  }
+
+  return { progress: nextProgress, removedItems };
+}
+
+function selectedResetCategories() {
+  return Array.from(elements.dataResetCategories)
+    .filter((input) => input.checked)
+    .map((input) => input.value);
+}
+
+function openDataResetDialog() {
+  resetDataResetDialog();
+  elements.dataResetDialog.showModal();
+}
+
+function closeDataResetDialog() {
+  if (!state.dataResetRunning) elements.dataResetDialog.close();
+}
+
+function resetDataResetDialog() {
+  if (state.dataResetRunning) return;
+  elements.dataResetCategories.forEach((input) => {
+    input.checked = false;
+  });
+  syncDataResetControls();
+}
+
+function syncDataResetControls() {
+  elements.resetSelectedCategories.disabled = state.dataResetRunning || selectedResetCategories().length === 0;
+}
+
+async function resetSelectedCategories() {
+  const categories = selectedResetCategories();
+  if (!categories.length || state.dataResetRunning) return;
+  const labels = categories.map(categoryLabel);
+  if (!confirm(`${labels.join("、")}のデータを削除します。この操作は元に戻せません。`)) return;
+
+  const result = resetProgressCategories(state.progress, categories, state.catalog?.items || []);
+  state.progress = result.progress;
+  state.dataResetRunning = true;
+  elements.resetSelectedCategories.textContent = "リセット中";
+  syncDataResetControls();
+
+  try {
+    await saveProgressNow();
+    if (categories.includes(state.category)) {
+      state.selectedId = null;
+      selectFirstItem();
+    }
+    render();
+    elements.dataResetDialog.close();
+    showToast(`${labels.join("・")}をリセットしました（${result.removedItems}件）`);
+  } catch (error) {
+    showToast(`リセット内容を保存できませんでした: ${error.message}`, "error");
+  } finally {
+    state.dataResetRunning = false;
+    elements.resetSelectedCategories.textContent = "選択したカテゴリをリセット";
+    syncDataResetControls();
+  }
 }
 
 function populateSourceFilter() {

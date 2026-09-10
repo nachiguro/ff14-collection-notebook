@@ -57,6 +57,10 @@
               魔獣図鑑
             </button>
           </nav>
+          <button id="openDataReset" class="nav-item data-reset-nav" type="button">
+            <span class="nav-glyph data-reset-glyph" aria-hidden="true"></span>
+            データリセット
+          </button>
         </div>
 
         <div class="rail-footer">
@@ -284,6 +288,41 @@
         <footer class="import-dialog-footer">
           <button id="cancelLodestoneTool" class="button ghost" type="button">キャンセル</button>
           <button id="applyLodestoneSnapshot" class="button" type="button" hidden>取得済みに反映</button>
+        </footer>
+      </div>
+    </dialog>
+
+    <dialog id="dataResetDialog" class="import-dialog data-reset-dialog" aria-labelledby="dataResetTitle" aria-describedby="dataResetDescription">
+      <div class="import-dialog-shell">
+        <header class="import-dialog-header">
+          <div>
+            <span class="kicker">Data Management</span>
+            <h3 id="dataResetTitle">カテゴリデータのリセット</h3>
+          </div>
+          <button id="closeDataReset" class="dialog-close" type="button" aria-label="閉じる" title="閉じる">×</button>
+        </header>
+
+        <div class="import-dialog-body">
+          <p id="dataResetDescription" class="data-reset-warning">選択したカテゴリの取得状況、欲しい、優先度、メモ、取込履歴を削除します。</p>
+          <fieldset class="data-reset-fieldset">
+            <legend>リセットするカテゴリ</legend>
+            <div class="data-reset-options">
+              <label><input type="checkbox" name="resetCategory" value="mount"><span>マウント</span></label>
+              <label><input type="checkbox" name="resetCategory" value="minion"><span>ミニオン</span></label>
+              <label><input type="checkbox" name="resetCategory" value="orchestrion"><span>オーケストリオン譜</span></label>
+              <label><input type="checkbox" name="resetCategory" value="card"><span>トリプルトライアドカード</span></label>
+              <label><input type="checkbox" name="resetCategory" value="emote"><span>エモート</span></label>
+              <label><input type="checkbox" name="resetCategory" value="spell"><span>青魔法</span></label>
+              <label><input type="checkbox" name="resetCategory" value="hairstyle"><span>髪型</span></label>
+              <label><input type="checkbox" name="resetCategory" value="fashion"><span>傘/ファッションアクセサリー</span></label>
+              <label><input type="checkbox" name="resetCategory" value="beast"><span>魔獣図鑑</span></label>
+            </div>
+          </fieldset>
+        </div>
+
+        <footer class="import-dialog-footer">
+          <button id="cancelDataReset" class="button ghost" type="button">キャンセル</button>
+          <button id="resetSelectedCategories" class="button danger" type="button" disabled>選択したカテゴリをリセット</button>
         </footer>
       </div>
     </dialog>
