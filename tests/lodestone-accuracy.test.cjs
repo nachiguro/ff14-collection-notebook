@@ -75,6 +75,49 @@ test("ownership and identifier conflicts are never auto-selected", () => {
   assert.equal(idConflict.metrics.conflictCount, 1);
 });
 
+test("Lodestone names require an exact match and never expand a short menu label", () => {
+  const { api } = loadReviewApi();
+  const candidates = api.findLodestoneSnapshotCandidates({
+    entries: [{ text: "ゴールドソーサー", status: "unknown", ownershipEvidence: "none" }]
+  }, "orchestrion");
+
+  assert.equal(candidates.length, 0);
+  assert.equal(candidates.some(({ item }) => item.id === "orchestrion-856"), false);
+  assert.equal(candidates.metrics.unmatchedCount, 1);
+  assert.equal("partialMatchCount" in candidates.metrics, false);
+});
+
+test("structured and legacy Orchestrion rows resolve by their exact item name", () => {
+  const { api } = loadReviewApi();
+  const cases = [
+    ["orchestrion-131", { name: "砂塵", text: "049 砂塵 049砂塵 オーケストリオン譜 入手方法 ゴールドソーサー 入手アイテム オーケストリオン譜:砂塵" }],
+    ["orchestrion-747", { text: "061 轟 061轟 オーケストリオン譜 入手方法 イディルシャイアにて交換 入手アイテム オーケストリオン譜:轟" }],
+    ["orchestrion-825", { text: "--- 最高のケーキを作るクポ ～ヴァレンティオンパティスリー～ ---最高のケーキを作るクポ ～ヴァレンティオンパティスリー～ オーケストリオン譜 入手方法 シーズナルイベント報酬 入手アイテム オーケストリオン譜:最高のケーキを作るクポ" }]
+  ];
+
+  for (const [expectedId, value] of cases) {
+    const entry = { ...value, status: "owned", ownershipEvidence: "owned-marker" };
+    const candidates = api.findLodestoneSnapshotCandidates({ entries: [entry] }, "orchestrion");
+    assert.deepEqual(Array.from(candidates, ({ item }) => item.id), [expectedId]);
+    assert.equal(candidates[0].matchKind, "exact-name");
+  }
+});
+
+test("legacy unacquired classes override the old substring ownership error", () => {
+  const { api } = loadReviewApi();
+  const candidates = api.findLodestoneSnapshotCandidates({
+    entries: [{
+      name: "砂塵",
+      text: "砂塵",
+      className: "entry unacquired",
+      status: "owned",
+      ownershipEvidence: "owned-marker"
+    }]
+  }, "orchestrion");
+
+  assert.equal(candidates.length, 0);
+});
+
 test("API evidence is appended without replacing the original snapshot", async () => {
   const { context, api } = loadReviewApi();
   const minion = catalog.items.find((item) => item.category === "minion");

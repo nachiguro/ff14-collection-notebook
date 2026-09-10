@@ -1691,7 +1691,7 @@ function lodestonePageExporter() {
       ...images.flatMap((image) => [image.alt, image.title, image.className])
     ].join(" ")).toLowerCase();
     if (element.querySelector('input:checked, [aria-checked="true"]')) return "owned";
-    if (/未取得|未修得|未登録|unobtained|unlearned|unregistered|not acquired|locked|disabled/.test(signal)) return "missing";
+    if (/未取得|未修得|未登録|unacquired|unobtained|unlearned|unregistered|not acquired|locked|disabled/.test(signal)) return "missing";
     if (/取得済|修得済|登録済|所持済|acquired|obtained|learned|registered|owned|complete/.test(signal)) return "owned";
     return "unknown";
   };
@@ -1800,7 +1800,7 @@ async function lodestoneAllCategoriesExporter() {
       node.getAttribute?.("data-state"),
       node.alt
     ]).join(" ")).toLowerCase();
-    if (/未取得|未修得|未登録|未所持|unobtained|unlearned|unregistered|not acquired|not obtained|is-locked/.test(signal)) {
+    if (/未取得|未修得|未登録|未所持|unacquired|unobtained|unlearned|unregistered|not acquired|not obtained|is-locked/.test(signal)) {
       return { status: "missing", ownershipEvidence: "missing-marker" };
     }
     if (/取得済|修得済|登録済|所持済|acquired|obtained|learned|registered|owned/.test(signal)) {
@@ -1840,7 +1840,11 @@ async function lodestoneAllCategoriesExporter() {
     const seen = new Set();
     const entries = [];
     for (const { element, text } of nodes) {
-      const anchor = element.matches("a[href]") ? element : element.querySelector("a[href]");
+      const itemAnchor = element.matches('a[href*="/lodestone/playguide/db/item/"]')
+        ? element
+        : element.querySelector('a[href*="/lodestone/playguide/db/item/"]');
+      if (categoryHint === "orchestrion" && !itemAnchor) continue;
+      const anchor = itemAnchor || (element.matches("a[href]") ? element : element.querySelector("a[href]"));
       const image = element.matches("img") ? element : element.querySelector("img");
       const href = anchor?.getAttribute("href") ? new URL(anchor.getAttribute("href"), url).href : "";
       const dataId = cleanText(element.getAttribute("data-id") || element.querySelector("[data-id]")?.getAttribute("data-id"));
@@ -1850,7 +1854,15 @@ async function lodestoneAllCategoriesExporter() {
       const classified = classify(element);
       const ownsByVerifiedList = classified.status === "unknown" && hasVerifiedOwnedOnlyList &&
         (element.matches(tooltipSelector) || element.querySelector(tooltipSelector));
+      const itemText = cleanText(itemAnchor?.textContent);
+      const orchestrionItemName = categoryHint === "orchestrion"
+        ? text.match(/^-{3}\s*(.+?)\s+-{3}/)?.[1] ||
+          itemText.match(/(?:オーケストリオン譜|orchestrion\s+roll)\s*[:：]\s*(.+)$/i)?.[1] ||
+          text.match(/(?:オーケストリオン譜|orchestrion\s+roll)\s*[:：]\s*(.+)$/i)?.[1] ||
+          text.match(/^\d+\s+(.+?)\s+\d+/)?.[1] || ""
+        : "";
       entries.push({
+        name: cleanText(orchestrionItemName).slice(0, 300),
         text,
         status: ownsByVerifiedList ? "owned" : classified.status,
         ownershipEvidence: ownsByVerifiedList ? "verified-owned-only-list" : classified.ownershipEvidence,
@@ -2177,7 +2189,7 @@ function analyzeLodestoneSnapshot() {
   }
 
   const candidateMap = new Map();
-  const analysisMetrics = { alreadyOwnedCount: 0, unmatchedCount: 0, conflictCount: 0, partialMatchCount: 0 };
+  const analysisMetrics = { alreadyOwnedCount: 0, unmatchedCount: 0, conflictCount: 0 };
   for (const { collection, category } of recognized) {
     const candidates = findLodestoneSnapshotCandidates(collection, category);
     for (const key of Object.keys(analysisMetrics)) {
@@ -2259,19 +2271,54 @@ function detectLodestoneSnapshotCategory(snapshot) {
   return scores[0]?.score > 0 ? scores[0].category : null;
 }
 
-function findLodestoneSnapshotCandidates(snapshot, category) {
-  const entries = snapshot.entries.map((entry) => ({
-    names: [entry?.name, entry?.text, entry?.title, entry?.imageAlt, entry?.ariaLabel]
-      .map(normalizeOcrText)
-      .filter((value) => value.length >= 2),
+function lodestoneEntryNames(entry, category) {
+  const names = [entry?.name, entry?.text, entry?.title, entry?.imageAlt, entry?.ariaLabel]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  if (category === "orchestrion") {
+    const text = String(entry?.text || "").replace(/\s+/g, " ").trim();
+    const itemName = text.match(/(?:オーケストリオン譜|orchestrion\s+roll)\s*[:：]\s*(.+)$/i)?.[1];
+    const numberedName = text.match(/^\d+\s+(.+?)\s+\d+/)?.[1];
+    const seasonalName = text.match(/^-{3}\s*(.+?)\s+-{3}/)?.[1];
+    if (itemName) names.push(itemName);
+    if (numberedName) names.push(numberedName);
+    if (seasonalName) names.push(seasonalName);
+  }
+  return Array.from(new Set(names));
+}
+
+function lodestoneEntryOwnership(entry) {
+  const signal = [entry?.className, entry?.ariaLabel, entry?.title, entry?.imageAlt]
+    .map((value) => String(value || ""))
+    .join(" ")
+    .toLowerCase();
+  if (/未取得|未修得|未登録|未所持|unacquired|unobtained|unlearned|unregistered|not acquired|not obtained|is-locked/.test(signal)) {
+    return { status: "missing", ownershipEvidence: "missing-marker" };
+  }
+  if (/取得済|修得済|登録済|所持済|acquired|obtained|learned|registered|owned/.test(signal)) {
+    return { status: "owned", ownershipEvidence: "owned-marker" };
+  }
+  return {
     status: ["owned", "missing"].includes(entry?.status) ? entry.status : "unknown",
-    ownershipEvidence: String(entry?.ownershipEvidence || "none"),
-    source: snapshot.evidenceSource || snapshot.source || "unknown",
-    observedAt: snapshot.fetchedAt || snapshot.capturedAt || null,
-    externalId: Number(entry?.externalId),
-    itemId: String(entry?.itemId || ""),
-    dataId: String(entry?.dataId || "")
-  })).filter((entry) => entry.names.length || Number.isFinite(entry.externalId) || entry.itemId || entry.dataId);
+    ownershipEvidence: String(entry?.ownershipEvidence || "none")
+  };
+}
+
+function findLodestoneSnapshotCandidates(snapshot, category) {
+  const entries = snapshot.entries.map((entry) => {
+    const ownership = lodestoneEntryOwnership(entry);
+    return {
+      names: lodestoneEntryNames(entry, category)
+        .map(normalizeOcrText)
+        .filter(Boolean),
+      ...ownership,
+      source: snapshot.evidenceSource || snapshot.source || "unknown",
+      observedAt: snapshot.fetchedAt || snapshot.capturedAt || null,
+      externalId: Number(entry?.externalId),
+      itemId: String(entry?.itemId || ""),
+      dataId: String(entry?.dataId || "")
+    };
+  }).filter((entry) => entry.names.length || Number.isFinite(entry.externalId) || entry.itemId || entry.dataId);
 
   const catalogItems = (state.catalog?.items || [])
     .filter((item) => item.category === category)
@@ -2279,7 +2326,7 @@ function findLodestoneSnapshotCandidates(snapshot, category) {
       item,
       aliases: Array.from(new Set([item.nameJa, item.nameEn, displayName(item)]
         .map(normalizeOcrText)
-        .filter((name) => name.length >= 2)))
+        .filter(Boolean)))
     }));
   const byInternalId = new Map(catalogItems.map(({ item }) => [item.id, item]));
   const byExternalId = new Map();
@@ -2298,7 +2345,7 @@ function findLodestoneSnapshotCandidates(snapshot, category) {
   }
 
   const matchesById = new Map();
-  const metrics = { alreadyOwnedCount: 0, unmatchedCount: 0, conflictCount: 0, partialMatchCount: 0 };
+  const metrics = { alreadyOwnedCount: 0, unmatchedCount: 0, conflictCount: 0 };
   const addMatch = (item, entry, matchKind) => {
     const values = matchesById.get(item.id) || [];
     values.push({ ...entry, matchKind });
@@ -2336,16 +2383,7 @@ function findLodestoneSnapshotCandidates(snapshot, category) {
       continue;
     }
 
-    const partialMatches = catalogItems.map(({ item, aliases }) => ({
-      item,
-      alias: aliases.filter((alias) => entry.names.some((name) => name.includes(alias) || alias.includes(name)))
-        .sort((a, b) => b.length - a.length)[0]
-    })).filter(({ alias }) => alias).sort((a, b) => b.alias.length - a.alias.length).slice(0, 5);
-    if (!partialMatches.length) metrics.unmatchedCount += 1;
-    for (const { item } of partialMatches) {
-      metrics.partialMatchCount += 1;
-      addMatch(item, { ...entry, status: "unknown" }, "partial-name");
-    }
+    metrics.unmatchedCount += 1;
   }
 
   const trustedOwnership = new Set(["owned-marker", "verified-owned-only-list", "ffxiv-collect-api", "lodestone-proxy-owned-list"]);
@@ -2365,7 +2403,7 @@ function findLodestoneSnapshotCandidates(snapshot, category) {
       return {
         item,
         status,
-        matchKind: matches.some((entry) => entry.matchKind === "partial-name") ? "partial-name" : matches[0].matchKind,
+        matchKind: matches[0].matchKind,
         autoSelected: status === "owned" && strongIdentity && matches.some((entry) => trustedOwnership.has(entry.ownershipEvidence)),
         evidence: matches.map(({ source, observedAt, ownershipEvidence, matchKind, status: evidenceStatus }) => ({
           source, observedAt, ownershipEvidence, matchKind, status: evidenceStatus
