@@ -1107,6 +1107,88 @@ select:focus {
   margin-top: 10px;
 }
 
+.lodestone-category-results {
+  padding: 14px 0 2px;
+  border-bottom: 1px solid rgba(214, 184, 114, 0.18);
+}
+
+.lodestone-category-results h4 {
+  margin: 0 0 8px;
+  color: #f3e6c3;
+  font-size: 14px;
+}
+
+.lodestone-category-result-list {
+  display: grid;
+}
+
+.lodestone-category-result {
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 20px minmax(150px, 0.8fr) minmax(0, 1.4fr);
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid rgba(214, 184, 114, 0.12);
+  padding: 8px 2px;
+}
+
+.lodestone-category-result-mark {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.lodestone-category-result[data-status="success"] .lodestone-category-result-mark {
+  color: #84c69a;
+}
+
+.lodestone-category-result[data-status="warning"] .lodestone-category-result-mark {
+  color: var(--gold-bright);
+}
+
+.lodestone-category-result[data-status="error"] .lodestone-category-result-mark {
+  color: #edb0b5;
+}
+
+.lodestone-category-result[data-status="neutral"] .lodestone-category-result-mark {
+  color: var(--muted);
+}
+
+.lodestone-category-result-name {
+  min-width: 0;
+  color: var(--mist);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.lodestone-category-result-detail {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .lodestone-category-result {
+    grid-template-columns: 20px minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .lodestone-category-result-mark {
+    margin-top: 1px;
+  }
+
+  .lodestone-category-result-detail {
+    grid-column: 2;
+  }
+}
+
 .screenshot-dropzone {
   min-height: 116px;
   border: 1px dashed var(--line-strong);

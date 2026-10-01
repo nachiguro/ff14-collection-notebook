@@ -57,6 +57,8 @@ const elements = {
   lodestoneSnapshotCategory: document.querySelector("#lodestoneSnapshotCategory"),
   lodestoneSnapshotFile: document.querySelector("#lodestoneSnapshotFile"),
   lodestoneSnapshotStatus: document.querySelector("#lodestoneSnapshotStatus"),
+  lodestoneCategoryResults: document.querySelector("#lodestoneCategoryResults"),
+  lodestoneCategoryResultList: document.querySelector("#lodestoneCategoryResultList"),
   lodestoneSnapshotCandidates: document.querySelector("#lodestoneSnapshotCandidates"),
   lodestoneSnapshotSummary: document.querySelector("#lodestoneSnapshotSummary"),
   lodestoneSnapshotCandidateList: document.querySelector("#lodestoneSnapshotCandidateList"),
@@ -121,6 +123,8 @@ const lodestoneCategories = {
   minion: "minions",
   emote: "emotes"
 };
+
+const lodestoneBatchEnrichmentCategories = new Set(["mount", "minion"]);
 
 const lodestoneProxyTooltipBatchSize = 20;
 const tesseractScriptUrl = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
@@ -2133,6 +2137,8 @@ function resetLodestoneTool() {
   elements.lodestoneSnapshotCategory.hidden = false;
   elements.lodestoneSnapshotCategory.disabled = false;
   elements.lodestoneSnapshotStatus.textContent = "";
+  elements.lodestoneCategoryResults.hidden = true;
+  elements.lodestoneCategoryResultList.innerHTML = "";
   elements.lodestoneSnapshotCandidates.hidden = true;
   elements.lodestoneSnapshotCandidateList.innerHTML = "";
   elements.applyLodestoneSnapshot.hidden = true;
@@ -2195,7 +2201,9 @@ async function enrichLodestoneSnapshot(snapshot) {
   }));
   const directImports = [];
   const directFailures = [];
-  const directCollections = await Promise.all(Object.entries(lodestoneCategories).map(async ([category, endpointCategory]) => {
+  const directCollections = await Promise.all(Object.entries(lodestoneCategories)
+    .filter(([category]) => lodestoneBatchEnrichmentCategories.has(category))
+    .map(async ([category, endpointCategory]) => {
     try {
       const result = await fetchOwnedCollectionByCharacter(characterId, endpointCategory, category, true);
       directImports.push({
@@ -2236,7 +2244,7 @@ async function enrichLodestoneSnapshot(snapshot) {
       directFailures.push({ categoryHint: category, error: error.message });
       return null;
     }
-  }));
+    }));
 
   const apiCollections = directCollections.filter(Boolean);
   const collections = originalCollections.concat(apiCollections);
@@ -2266,6 +2274,8 @@ async function enrichLodestoneSnapshot(snapshot) {
 function analyzeLodestoneSnapshot() {
   const snapshot = state.lodestoneSnapshot;
   if (!snapshot) return;
+
+  renderLodestoneCategoryResults(snapshot);
 
   const collections = Array.isArray(snapshot.collections) ? snapshot.collections : [snapshot];
   const isBatch = Array.isArray(snapshot.collections);
@@ -2325,7 +2335,6 @@ function analyzeLodestoneSnapshot() {
   const directMatched = Array.isArray(snapshot.directImports)
     ? snapshot.directImports.reduce((total, result) => total + result.read, 0)
     : 0;
-  const directFailed = Array.isArray(snapshot.directFailures) ? snapshot.directFailures.length : 0;
   const skipped = analyzed.length - recognized.length;
   const partialImports = Array.isArray(snapshot.directImports)
     ? snapshot.directImports.filter((result) => result.completeness === "partial").length
@@ -2333,12 +2342,79 @@ function analyzeLodestoneSnapshot() {
   const apiDifferences = Array.isArray(snapshot.comparisons)
     ? snapshot.comparisons.filter((result) => result.difference !== 0).length
     : 0;
-  const directSummary = directMatched || directFailed || partialImports || apiDifferences
-    ? `、API/ID証拠 ${directMatched}件${directFailed ? `（${directFailed}カテゴリ失敗）` : ""}${partialImports ? `、不完全 ${partialImports}カテゴリ` : ""}${apiDifferences ? `、元データとの差 ${apiDifferences}カテゴリ` : ""}`
+  const directSummary = directMatched || partialImports || apiDifferences
+    ? `、API/ID証拠 ${directMatched}件${partialImports ? `、不完全 ${partialImports}カテゴリ` : ""}${apiDifferences ? `、元データとの差 ${apiDifferences}カテゴリ` : ""}`
     : "";
   elements.lodestoneSnapshotStatus.textContent = state.lodestoneSnapshotCandidates.length
     ? `${categories.map(categoryLabel).join("・")}を解析しました。自動選択 ${knownOwned}件、要確認 ${state.lodestoneSnapshotCandidates.length - knownOwned}件${conflicts ? `、競合 ${conflicts}件` : ""}${analysisMetrics.alreadyOwnedCount ? `、登録済み ${analysisMetrics.alreadyOwnedCount}件` : ""}${directSummary}${failed || skipped ? `、未取込 ${failed + skipped}カテゴリ` : ""}です。`
     : `${categories.map(categoryLabel).join("・")}に追加候補はありません${analysisMetrics.alreadyOwnedCount ? `（登録済み ${analysisMetrics.alreadyOwnedCount}件）` : ""}${conflicts ? `。競合 ${conflicts}件を確認してください` : ""}。${directSummary}`;
+}
+
+function buildLodestoneCategoryResults(snapshot) {
+  const allCollections = Array.isArray(snapshot?.collections) ? snapshot.collections : [];
+  const originalCollections = Array.isArray(snapshot?.originalCollections)
+    ? snapshot.originalCollections
+    : allCollections.filter((collection) => collection?.matchMethod !== "character-id");
+  const directImports = new Map((snapshot?.directImports || []).map((result) => [result.categoryHint, result]));
+  const directFailures = new Map((snapshot?.directFailures || []).map((result) => [result.categoryHint, result]));
+  const pageFailures = new Map((snapshot?.failures || [])
+    .filter((result) => result.categoryHint)
+    .map((result) => [result.categoryHint, result]));
+
+  return Object.keys(categoryLabels).map((category) => {
+    const collections = originalCollections.filter((collection) => detectLodestoneSnapshotCategory(collection) === category);
+    const entryCount = collections.reduce((total, collection) => total + (Array.isArray(collection.entries) ? collection.entries.length : 0), 0);
+    const directImport = directImports.get(category);
+    const directFailure = directFailures.get(category);
+    const pageFailure = pageFailures.get(category);
+
+    if (directImport) {
+      const partial = directImport.completeness === "partial" || Number(directImport.failedCount) > 0;
+      return {
+        category,
+        status: partial ? "warning" : "success",
+        label: partial ? "一部完了" : "完了",
+        detail: `${Number(directImport.read) || 0}件をAPI/ID照合で読み込み${partial ? `（${Number(directImport.failedCount) || 0}件失敗）` : ""}`
+      };
+    }
+
+    if (entryCount > 0) {
+      return {
+        category,
+        status: directFailure ? "warning" : "success",
+        label: directFailure ? "完了（画面データ使用）" : "完了",
+        detail: `${entryCount}行をLodestone画面から読み込み${directFailure ? "・追加照合は利用できませんでした" : ""}`
+      };
+    }
+
+    if (pageFailure || directFailure || collections.length) {
+      const failure = pageFailure || directFailure;
+      const detail = failure?.error
+        ? `読み込み失敗: ${String(failure.error).slice(0, 160)}`
+        : "対応する項目をページから読み込めませんでした";
+      return { category, status: "error", label: "失敗", detail };
+    }
+
+    return {
+      category,
+      status: "neutral",
+      label: "対象ページなし",
+      detail: "書き出し対象のページが見つかりませんでした"
+    };
+  });
+}
+
+function renderLodestoneCategoryResults(snapshot) {
+  const marks = { success: "✓", warning: "!", error: "×", neutral: "−" };
+  const results = buildLodestoneCategoryResults(snapshot);
+  elements.lodestoneCategoryResultList.innerHTML = results.map((result) => `
+    <div class="lodestone-category-result" data-status="${result.status}">
+      <span class="lodestone-category-result-mark" aria-hidden="true">${marks[result.status]}</span>
+      <strong class="lodestone-category-result-name">${escapeHtml(categoryLabel(result.category))}</strong>
+      <span class="lodestone-category-result-detail"><strong>${escapeHtml(result.label)}</strong>・${escapeHtml(result.detail)}</span>
+    </div>
+  `).join("");
+  elements.lodestoneCategoryResults.hidden = false;
 }
 
 function detectLodestoneSnapshotCategory(snapshot) {

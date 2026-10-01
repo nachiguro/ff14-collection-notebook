@@ -23,7 +23,7 @@ function loadReviewApi() {
   });
   vm.runInContext(
     source.replace(/init\(\);\s*$/, "") +
-      "\nglobalThis.review = { state, normalizeOcrText, findLodestoneSnapshotCandidates, enrichLodestoneSnapshot };",
+      "\nglobalThis.review = { state, normalizeOcrText, findLodestoneSnapshotCandidates, enrichLodestoneSnapshot, buildLodestoneCategoryResults };",
     context
   );
   context.review.state.catalog = catalog;
@@ -122,8 +122,9 @@ test("API evidence is appended without replacing the original snapshot", async (
   const { context, api } = loadReviewApi();
   const minion = catalog.items.find((item) => item.category === "minion");
   vm.runInContext(
+    "globalThis.reviewCalls = [];" +
     "fetchOwnedCollectionByCharacter = async (characterId, endpoint, categoryKey) => " +
-      "({ characterId, categoryKey, ownedItems: [], source: 'review-empty-api', completeness: 'complete', fetchedAt: new Date().toISOString() });",
+      "(reviewCalls.push(categoryKey), { characterId, categoryKey, ownedItems: [], source: 'review-empty-api', completeness: 'complete', fetchedAt: new Date().toISOString() });",
     context
   );
 
@@ -134,4 +135,31 @@ test("API evidence is appended without replacing the original snapshot", async (
   assert.equal(enriched.originalCollections[0].entries.length, 1);
   assert.ok(enriched.collections.some((collection) => collection !== enriched.collections[0] && collection.categoryHint === "minion" && collection.entries.length === 0));
   assert.ok(enriched.comparisons.some((comparison) => comparison.categoryHint === "minion" && comparison.apiEmptyWithOriginalEvidence));
+  assert.deepEqual(Array.from(context.reviewCalls).sort(), ["minion", "mount"]);
+  assert.equal(context.reviewCalls.includes("emote"), false);
+});
+
+test("category results distinguish completed, fallback, failed, and unavailable categories", () => {
+  const { api } = loadReviewApi();
+  const results = api.buildLodestoneCategoryResults({
+    collections: [
+      { categoryHint: "card", entries: Array.from({ length: 134 }, () => ({ text: "card" })) },
+      { categoryHint: "emote", entries: Array.from({ length: 229 }, () => ({ text: "emote" })) },
+      { categoryHint: "spell", entries: [] }
+    ],
+    directImports: [{ categoryHint: "mount", read: 31, completeness: "complete", failedCount: 0 }],
+    directFailures: [{ categoryHint: "emote", error: "API unavailable" }],
+    failures: [{ categoryHint: "beast", error: "HTTP 500" }]
+  });
+  const byCategory = new Map(Array.from(results, (result) => [result.category, result]));
+
+  assert.equal(byCategory.get("card").status, "success");
+  assert.match(byCategory.get("card").detail, /134/);
+  assert.equal(byCategory.get("emote").status, "warning");
+  assert.match(byCategory.get("emote").label, /画面データ使用/);
+  assert.equal(byCategory.get("mount").status, "success");
+  assert.match(byCategory.get("mount").detail, /API\/ID照合/);
+  assert.equal(byCategory.get("spell").status, "error");
+  assert.equal(byCategory.get("beast").status, "error");
+  assert.equal(byCategory.get("hairstyle").status, "neutral");
 });
