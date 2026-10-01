@@ -1935,7 +1935,8 @@ async function lodestoneAllCategoriesExporter() {
           title: cleanText(element.getAttribute("title")).slice(0, 300),
           imageAlt: cleanText(image?.alt || image?.title).slice(0, 300),
           href: itemAnchor?.getAttribute("href") ? new URL(itemAnchor.getAttribute("href"), url).href : "",
-          dataId: number ? `card-${number}` : ""
+          dataId: "",
+          listNumber: number
         };
       }).filter((entry) => entry.name);
       return {
@@ -2690,7 +2691,9 @@ function findLodestoneSnapshotCandidates(snapshot, category) {
       observedAt: snapshot.fetchedAt || snapshot.capturedAt || null,
       externalId: Number(entry?.externalId),
       itemId: String(entry?.itemId || ""),
-      dataId: String(entry?.dataId || "")
+      dataId: category === "card" && ["visible-card-name", "hidden-card-name"].includes(ownership.ownershipEvidence)
+        ? ""
+        : String(entry?.dataId || "")
     };
   }).filter((entry) => entry.names.length || Number.isFinite(entry.externalId) || entry.itemId || entry.dataId);
 

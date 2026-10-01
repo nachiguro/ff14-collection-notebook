@@ -127,13 +127,32 @@ test("visible Triple Triad card names are trusted owned evidence", () => {
       text: "ソードマスター",
       status: "owned",
       ownershipEvidence: "visible-card-name",
-      dataId: "card-463"
+      dataId: "card-447"
     }]
   }, "card");
 
   assert.equal(candidates.length, 1);
   assert.equal(candidates[0].item.id, "card-463");
   assert.equal(candidates[0].status, "owned");
+  assert.equal(candidates[0].autoSelected, true);
+});
+
+test("Lodestone card list numbers never override an exact card name", () => {
+  const { api } = loadReviewApi();
+  const unrelated = catalog.items.find((item) => item.id === "card-447");
+  assert.notEqual(unrelated.nameJa, "ソードマスター");
+
+  const candidates = api.findLodestoneSnapshotCandidates({
+    entries: [{
+      name: "ソードマスター",
+      status: "owned",
+      ownershipEvidence: "visible-card-name",
+      dataId: "card-447"
+    }]
+  }, "card");
+
+  assert.deepEqual(Array.from(candidates, ({ item }) => item.id), ["card-463"]);
+  assert.equal(candidates[0].matchKind, "exact-name");
   assert.equal(candidates[0].autoSelected, true);
 });
 
