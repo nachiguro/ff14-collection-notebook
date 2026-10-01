@@ -1916,6 +1916,147 @@ async function lodestoneAllCategoriesExporter() {
   const extractCollection = (doc, url) => {
     const root = doc.querySelector("main, #character, .ldst__main") || doc.body;
     const categoryHint = detectCategory(url, doc);
+    if (categoryHint === "card") {
+      const cardElements = Array.from(root.querySelectorAll("ul.tripletriad-card_list > li"));
+      const entries = cardElements.map((element) => {
+        const name = cleanText(element.querySelector(".name_inner")?.textContent);
+        const numberText = cleanText(element.querySelector(".num span")?.textContent);
+        const number = numberText.match(/\d+/)?.[0] || "";
+        const itemAnchor = element.querySelector('.tripletriad-tooltip__item__text a[href]');
+        const image = element.querySelector("img.card, img");
+        const hiddenName = element.classList.contains("unsettled") || /^[?？]+$/.test(name);
+        return {
+          name,
+          text: name,
+          status: hiddenName ? "missing" : "owned",
+          ownershipEvidence: hiddenName ? "hidden-card-name" : "visible-card-name",
+          className: cleanText(element.className).slice(0, 300),
+          ariaLabel: cleanText(element.getAttribute("aria-label")).slice(0, 300),
+          title: cleanText(element.getAttribute("title")).slice(0, 300),
+          imageAlt: cleanText(image?.alt || image?.title).slice(0, 300),
+          href: itemAnchor?.getAttribute("href") ? new URL(itemAnchor.getAttribute("href"), url).href : "",
+          dataId: number ? `card-${number}` : ""
+        };
+      }).filter((entry) => entry.name);
+      return {
+        url,
+        title: doc.title,
+        headings: cleanText(Array.from(root.querySelectorAll("h1, h2, h3"))
+          .map((element) => element.textContent)
+          .join(" ")),
+        categoryHint,
+        layoutStatus: entries.length ? "verified-card-list" : "unsupported-layout",
+        entries
+      };
+    }
+    if (categoryHint === "emote") {
+      const entries = Array.from(root.querySelectorAll("ul.emote__list > li.js__btn_press")).map((element) => {
+        const name = cleanText(element.querySelector("p")?.textContent);
+        return {
+          name,
+          text: name,
+          status: "owned",
+          ownershipEvidence: "verified-owned-only-list",
+          className: cleanText(element.className).slice(0, 300),
+          ariaLabel: "",
+          title: "",
+          imageAlt: "",
+          href: "",
+          dataId: ""
+        };
+      }).filter((entry) => entry.name);
+      return {
+        url,
+        title: doc.title,
+        headings: cleanText(Array.from(root.querySelectorAll("h1, h2, h3")).map((element) => element.textContent).join(" ")),
+        categoryHint,
+        layoutStatus: entries.length ? "verified-owned-only-list" : "unsupported-layout",
+        entries
+      };
+    }
+    if (categoryHint === "orchestrion") {
+      const entries = Array.from(root.querySelectorAll("ul.orchestrion-list > li")).map((element) => {
+        const name = cleanText(element.querySelector(".orchestrion-list__name")?.textContent);
+        const missing = element.classList.contains("unacquired");
+        const itemAnchor = element.querySelector('a[href*="/lodestone/playguide/db/item/"]');
+        return {
+          name,
+          text: name,
+          status: missing ? "missing" : "owned",
+          ownershipEvidence: missing ? "missing-marker" : "owned-marker",
+          className: cleanText(element.className).slice(0, 300),
+          ariaLabel: "",
+          title: "",
+          imageAlt: "",
+          href: itemAnchor?.getAttribute("href") ? new URL(itemAnchor.getAttribute("href"), url).href : "",
+          dataId: ""
+        };
+      }).filter((entry) => entry.name);
+      return {
+        url,
+        title: doc.title,
+        headings: cleanText(Array.from(root.querySelectorAll("h1, h2, h3")).map((element) => element.textContent).join(" ")),
+        categoryHint,
+        layoutStatus: entries.length ? "verified-status-list" : "unsupported-layout",
+        entries
+      };
+    }
+    if (categoryHint === "spell") {
+      const entries = Array.from(root.querySelectorAll("li.bluemage-action__list__item")).map((element) => {
+        const header = cleanText(element.querySelector(".bluemage-tooltip__header")?.textContent);
+        const name = cleanText(element.querySelector(".bluemage-action__name")?.textContent) ||
+          cleanText(header.replace(/^No\.\s*\d+\s*/i, ""));
+        const missing = element.classList.contains("sys-no_reward");
+        return {
+          name,
+          text: name,
+          status: missing ? "missing" : "owned",
+          ownershipEvidence: missing ? "missing-marker" : "owned-marker",
+          className: cleanText(element.className).slice(0, 300),
+          ariaLabel: "",
+          title: "",
+          imageAlt: "",
+          href: "",
+          dataId: ""
+        };
+      }).filter((entry) => entry.name);
+      return {
+        url,
+        title: doc.title,
+        headings: cleanText(Array.from(root.querySelectorAll("h1, h2, h3")).map((element) => element.textContent).join(" ")),
+        categoryHint,
+        layoutStatus: entries.length ? "verified-status-list" : "unsupported-layout",
+        entries
+      };
+    }
+    if (categoryHint === "beast") {
+      const entries = Array.from(root.querySelectorAll("li.mastersbestiary-pet__list__item")).map((element) => {
+        const text = cleanText(element.textContent);
+        const match = text.match(/^No\.\s*\d+\s+(.+)$/i);
+        const name = cleanText(element.querySelector(".mastersbestiary-pet__name, .mastersbestiary-pet__list__name, .name")?.textContent) || cleanText(match?.[1]);
+        const missing = element.classList.contains("sys-no_capture");
+        return {
+          name,
+          text: name,
+          status: missing ? "missing" : "owned",
+          ownershipEvidence: missing ? "missing-marker" : "owned-marker",
+          className: cleanText(element.className).slice(0, 300),
+          ariaLabel: "",
+          title: "",
+          imageAlt: "",
+          href: "",
+          dataId: ""
+        };
+      }).filter((entry) => entry.name);
+      return {
+        url,
+        title: doc.title,
+        headings: cleanText(Array.from(root.querySelectorAll("h1, h2, h3")).map((element) => element.textContent).join(" ")),
+        categoryHint,
+        layoutStatus: entries.length ? "verified-status-list" : "unsupported-layout",
+        entries
+      };
+    }
     const selectors = [
       "tr",
       "li",
@@ -2072,8 +2213,46 @@ async function lodestoneAllCategoriesExporter() {
     for (const [category, url] of categoryUrls) {
       status.textContent = `取得中 ${completed + 1}/${categoryUrls.size}`;
       try {
-        const collection = extractCollection(await fetchDocument(url), url);
+        const categoryUrl = new URL(url);
+        if (category === "card") {
+          categoryUrl.searchParams.set("page", "1");
+          categoryUrl.searchParams.set("hold", "");
+        }
+        const firstUrl = categoryUrl.href;
+        let collection = extractCollection(await fetchDocument(firstUrl), firstUrl);
         collection.categoryHint ||= category;
+        if (category === "card") {
+          const paginationText = cleanText((await fetchDocument(firstUrl)).querySelector(".btn__pager__current")?.textContent);
+          const pageNumbers = paginationText.match(/\d+/g) || [];
+          const totalPages = Math.min(Math.max(Number(pageNumbers[1]) || 1, 1), 20);
+          const pageCollections = [collection];
+          const pageFailures = [];
+          for (let page = 2; page <= totalPages; page += 1) {
+            status.textContent = `カード取得中 ${page}/${totalPages}ページ`;
+            const pageUrl = new URL(firstUrl);
+            pageUrl.searchParams.set("page", String(page));
+            pageUrl.searchParams.set("hold", "");
+            try {
+              pageCollections.push(extractCollection(await fetchDocument(pageUrl.href), pageUrl.href));
+            } catch (error) {
+              pageFailures.push({ categoryHint: category, page, url: pageUrl.href, error: error.message });
+            }
+          }
+          const seenCards = new Set();
+          collection = {
+            ...collection,
+            layoutStatus: pageFailures.length ? "partial" : "verified-card-list",
+            pagesRead: pageCollections.length,
+            totalPages,
+            entries: pageCollections.flatMap((pageCollection) => pageCollection.entries).filter((entry) => {
+              const key = entry.dataId || `${entry.name}|${entry.href}`;
+              if (seenCards.has(key)) return false;
+              seenCards.add(key);
+              return true;
+            })
+          };
+          failures.push(...pageFailures);
+        }
         collections.push(collection);
       } catch (error) {
         failures.push({ categoryHint: category, url, error: error.message });
@@ -2085,7 +2264,7 @@ async function lodestoneAllCategoriesExporter() {
     }
 
     const payload = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       source: "ff14-collection-notebook-lodestone-bookmarklet",
       capturedAt: new Date().toISOString(),
       characterId,
@@ -2367,6 +2546,11 @@ function buildLodestoneCategoryResults(snapshot) {
     const directImport = directImports.get(category);
     const directFailure = directFailures.get(category);
     const pageFailure = pageFailures.get(category);
+    const legacyCardLayout = category === "card" && collections.some((collection) =>
+      collection.layoutStatus !== "verified-card-list" && collection.layoutStatus !== "partial");
+    const partialCollection = collections.some((collection) => collection.layoutStatus === "partial");
+    const pagesRead = Math.max(0, ...collections.map((collection) => Number(collection.pagesRead) || 0));
+    const totalPages = Math.max(0, ...collections.map((collection) => Number(collection.totalPages) || 0));
 
     if (directImport) {
       const partial = directImport.completeness === "partial" || Number(directImport.failedCount) > 0;
@@ -2379,11 +2563,24 @@ function buildLodestoneCategoryResults(snapshot) {
     }
 
     if (entryCount > 0) {
+      if (legacyCardLayout) {
+        return {
+          category,
+          status: "error",
+          label: "再書き出しが必要",
+          detail: "カード全ページ取得対応の新しいブックマークレットを登録し直してください"
+        };
+      }
+      const warning = Boolean(directFailure || pageFailure || partialCollection);
+      const pageDetail = totalPages ? `（${pagesRead}/${totalPages}ページ）` : "";
+      const label = pageFailure || partialCollection
+        ? "一部完了"
+        : directFailure ? "完了（画面データ使用）" : "完了";
       return {
         category,
-        status: directFailure ? "warning" : "success",
-        label: directFailure ? "完了（画面データ使用）" : "完了",
-        detail: `${entryCount}行をLodestone画面から読み込み${directFailure ? "・追加照合は利用できませんでした" : ""}`
+        status: warning ? "warning" : "success",
+        label,
+        detail: `${entryCount}行をLodestone画面から読み込み${pageDetail}${directFailure ? "・追加照合は利用できませんでした" : ""}`
       };
     }
 
@@ -2563,7 +2760,7 @@ function findLodestoneSnapshotCandidates(snapshot, category) {
     metrics.unmatchedCount += 1;
   }
 
-  const trustedOwnership = new Set(["owned-marker", "verified-owned-only-list", "ffxiv-collect-api", "lodestone-proxy-owned-list"]);
+  const trustedOwnership = new Set(["owned-marker", "verified-owned-only-list", "visible-card-name", "ffxiv-collect-api", "lodestone-proxy-owned-list"]);
   const candidates = catalogItems
     .map(({ item }) => {
       const matches = matchesById.get(item.id) || [];

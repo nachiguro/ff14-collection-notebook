@@ -118,6 +118,60 @@ test("legacy unacquired classes override the old substring ownership error", () 
   assert.equal(candidates.length, 0);
 });
 
+test("visible Triple Triad card names are trusted owned evidence", () => {
+  const { api } = loadReviewApi();
+  const candidates = api.findLodestoneSnapshotCandidates({
+    evidenceSource: "lodestone-bookmarklet",
+    entries: [{
+      name: "ソードマスター",
+      text: "ソードマスター",
+      status: "owned",
+      ownershipEvidence: "visible-card-name",
+      dataId: "card-463"
+    }]
+  }, "card");
+
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].item.id, "card-463");
+  assert.equal(candidates[0].status, "owned");
+  assert.equal(candidates[0].autoSelected, true);
+});
+
+test("batch bookmarklet uses the card list structure and reads every reported page", () => {
+  assert.match(source, /ul\.tripletriad-card_list > li/);
+  assert.match(source, /searchParams\.set\("page", String\(page\)\)/);
+  assert.match(source, /ownershipEvidence: hiddenName \? "hidden-card-name" : "visible-card-name"/);
+});
+
+test("batch bookmarklet uses category-specific ownership structures", () => {
+  assert.match(source, /ul\.emote__list > li\.js__btn_press/);
+  assert.match(source, /ul\.orchestrion-list > li/);
+  assert.match(source, /li\.bluemage-action__list__item/);
+  assert.match(source, /li\.mastersbestiary-pet__list__item/);
+  assert.match(source, /classList\.contains\("unacquired"\)/);
+  assert.match(source, /classList\.contains\("sys-no_reward"\)/);
+  assert.match(source, /classList\.contains\("sys-no_capture"\)/);
+});
+
+test("verified ownership evidence auto-selects every Lodestone list category", () => {
+  const { api } = loadReviewApi();
+  const cases = [
+    ["emote", "高笑い", "verified-owned-only-list"],
+    ["orchestrion", "古の空", "owned-marker"],
+    ["spell", "ルーム", "owned-marker"],
+    ["beast", "シープ", "owned-marker"]
+  ];
+
+  for (const [category, name, ownershipEvidence] of cases) {
+    const candidates = api.findLodestoneSnapshotCandidates({
+      evidenceSource: "lodestone-bookmarklet",
+      entries: [{ name, text: name, status: "owned", ownershipEvidence }]
+    }, category);
+    assert.equal(candidates.length, 1, `${category} should match the catalog`);
+    assert.equal(candidates[0].autoSelected, true, `${category} should be auto-selected`);
+  }
+});
+
 test("API evidence is appended without replacing the original snapshot", async () => {
   const { context, api } = loadReviewApi();
   const minion = catalog.items.find((item) => item.category === "minion");
@@ -143,7 +197,7 @@ test("category results distinguish completed, fallback, failed, and unavailable 
   const { api } = loadReviewApi();
   const results = api.buildLodestoneCategoryResults({
     collections: [
-      { categoryHint: "card", entries: Array.from({ length: 134 }, () => ({ text: "card" })) },
+      { categoryHint: "card", layoutStatus: "verified-card-list", pagesRead: 5, totalPages: 5, entries: Array.from({ length: 134 }, () => ({ text: "card" })) },
       { categoryHint: "emote", entries: Array.from({ length: 229 }, () => ({ text: "emote" })) },
       { categoryHint: "spell", entries: [] }
     ],
@@ -162,4 +216,16 @@ test("category results distinguish completed, fallback, failed, and unavailable 
   assert.equal(byCategory.get("spell").status, "error");
   assert.equal(byCategory.get("beast").status, "error");
   assert.equal(byCategory.get("hairstyle").status, "neutral");
+});
+
+test("legacy card exports require the updated bookmarklet", () => {
+  const { api } = loadReviewApi();
+  const results = api.buildLodestoneCategoryResults({
+    schemaVersion: 3,
+    collections: [{ categoryHint: "card", layoutStatus: "review-required", entries: [{ text: "menu row" }] }]
+  });
+  const card = Array.from(results).find((result) => result.category === "card");
+
+  assert.equal(card.status, "error");
+  assert.match(card.label, /再書き出し/);
 });
